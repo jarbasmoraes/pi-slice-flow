@@ -6,7 +6,7 @@
  * the modules that do the work:
  *
  *   lib/config.ts      defaults + slice-flow.json overlay
- *   lib/workspace.ts   domain state, paths, and all ./feature-work/ IO
+ *   lib/workspace.ts   domain state, paths, and all .pi/task/<slug>/ IO
  *   lib/briefs.ts      every spawned agent's prompt text (pure strings)
  *   lib/directives.ts  exact `subagent` tool arguments per workflow step
  *   lib/gates.ts       TUI approval gates (narrow GateContext dependency)
@@ -15,8 +15,10 @@
  * Thin by design: all judgment lives in skills, all spawning in pi-subagents
  * (chains for sequential phases, parallel mode for fan-outs). Every spawned
  * agent is a fresh Pi instance; every prompt is inspectable under
- * ./feature-work/logs/; all state persists to ./feature-work/state.json so
- * the workflow survives restarts and /reload.
+ * .pi/task/<slug>/logs/; all state persists to .pi/task/<slug>/state.json so
+ * the workflow survives restarts and /reload. Several tasks can be active at
+ * once — each in its own slug folder — and actions target one via the `slug`
+ * parameter (or, when only one task is active, by default).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -24,14 +26,18 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { loadConfig } from "./lib/config.ts";
 import type { SliceFlowConfig } from "./lib/config.ts";
-import { nextStep, startWorkflow, stopped } from "./lib/engine.ts";
+import { converge, nextStep, startAttack, startResearch, startWorkflow, stopped } from "./lib/engine.ts";
 import {
+	allocateSlug,
 	ensureGitignored,
+	inferTaskSlug,
 	isActive,
+	listTasks,
 	loadState,
 	logEvent,
 	observeSubagentCall,
 	observeSubagentResult,
+	resolveActiveTask,
 	statusSummary,
 	workPaths,
 } from "./lib/workspace.ts";
@@ -39,14 +45,39 @@ import type { Paths, State } from "./lib/workspace.ts";
 
 interface Workspace {
 	cfg: SliceFlowConfig;
-	p: Paths;
+	p: Paths | null;
 	state: State | null;
+	slug: string | null;
 }
 
-function openWorkspace(cwd: string): Workspace {
+/**
+ * Resolve which task an action operates on. An explicit slug targets that task;
+ * otherwise the single active task is used. Throws a directive-friendly error
+ * when the slug is unknown or several tasks are active at once. Returns a
+ * null-path workspace when there is no task at all (callers handle that).
+ */
+function openTask(cwd: string, slug?: string): Workspace {
 	const cfg = loadConfig(cwd);
-	const p = workPaths(cwd, cfg.workDir);
-	return { cfg, p, state: loadState(p) };
+	const res = resolveActiveTask(cwd, cfg.workDir, slug);
+	switch (res.kind) {
+		case "none":
+			return { cfg, p: null, state: null, slug: null };
+		case "ambiguous":
+			throw new Error(
+				`Multiple slice-flow tasks are active: ${res.active.join(", ")}. ` +
+					`Add "slug" to target one, e.g. slice_flow({"action":"status","slug":"${res.active[0]}"}).`,
+			);
+		case "missing": {
+			const known = listTasks(cwd, cfg.workDir).map((t) => t.slug);
+			throw new Error(
+				`No slice-flow task "${res.slug}" under ${cfg.workDir}/.` + (known.length ? ` Known tasks: ${known.join(", ")}.` : " Start one with /feature."),
+			);
+		}
+		case "ok": {
+			const p = workPaths(cwd, cfg.workDir, res.slug);
+			return { cfg, p, state: loadState(p), slug: res.slug };
+		}
+	}
 }
 
 export default function (pi: ExtensionAPI) {
@@ -55,55 +86,88 @@ export default function (pi: ExtensionAPI) {
 		label: "Slice Flow",
 		description:
 			"Orchestrates the slice-flow feature workflow (frame -> architect -> plan -> implement -> verify -> loop). " +
-			"Actions: 'start' (requires description) begins a workflow; 'next' validates the last step, runs approval gates, and returns the next directive; " +
-			"'status' reports state; 'abort' stops the workflow. Directives contain exact `subagent` tool arguments that MUST be invoked verbatim.",
-		promptSnippet: "Drive the slice-flow feature workflow (start/next/status/abort)",
+			"Each task lives in its own .pi/task/<slug>/ folder and several can be active at once. " +
+			"Actions: 'start' (requires description) begins a new task and returns its slug; 'next' validates the last step, runs approval gates, and returns the next directive; " +
+			"'status' reports state; 'abort' stops the task. During frame exploration only: 'research' (requires questions) fans out web researchers, " +
+			"'attack' spawns fresh adversaries against the draft framing, 'converge' compiles the decision ledger into the frame document. " +
+			"Pass 'slug' to target a specific task; it is required only when more than one task is active. " +
+			"Directives contain exact `subagent` tool arguments that MUST be invoked verbatim.",
+		promptSnippet: "Drive the slice-flow feature workflow (start/next/status/abort; research/attack/converge during frame exploration)",
 		promptGuidelines: [
 			"When a slice_flow directive provides subagent arguments, call the subagent tool with that JSON verbatim, then call slice_flow with action 'next'. Never implement workflow steps yourself.",
+			"Each task has a slug (returned by 'start' and echoed in every directive). Pass that same \"slug\" on every follow-up call so the right task advances when several are active.",
+			"During the frame explore stage you act as the framing partner (framing-partner skill): converse with the user, maintain the decision ledger, and use the research/attack/converge actions.",
 		],
 		parameters: Type.Object({
-			action: StringEnum(["start", "next", "status", "abort"] as const),
+			action: StringEnum(["start", "next", "status", "abort", "research", "attack", "converge"] as const),
 			description: Type.Optional(Type.String({ description: "Feature description (required for action 'start')" })),
+			slug: Type.Optional(
+				Type.String({ description: "Task folder to target (.pi/task/<slug>/). Required when more than one task is active; ignored by 'start'." }),
+			),
+			questions: Type.Optional(
+				Type.Array(Type.String(), { description: "Research questions, one per researcher agent (required for action 'research')" }),
+			),
 			note: Type.Optional(Type.String({ description: "Optional context to record in the workflow log" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { cfg, p, state } = openWorkspace(ctx.cwd);
+			// `start` allocates a brand-new slug folder, so it never resolves an
+			// existing task; every other action targets one via openTask.
+			if (params.action === "start") {
+				if (!params.description?.trim()) throw new Error("action 'start' requires a non-empty description.");
+				const cfg = loadConfig(ctx.cwd);
+				const baseline = await gitBaseline(pi);
+				if (cfg.gitignoreWorkDir && baseline !== null) ensureGitignored(ctx.cwd, cfg.workDir);
+				const slug = allocateSlug(ctx.cwd, cfg.workDir, params.description.trim());
+				const p = workPaths(ctx.cwd, cfg.workDir, slug);
+				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline);
+				return { content: [{ type: "text", text }], details: { phase: "frame", slug } };
+			}
+
+			const noTaskHint = "No slice-flow task here. Start one with /feature <description>.";
+			const { cfg, p, state, slug } = openTask(ctx.cwd, params.slug);
 
 			switch (params.action) {
 				case "status": {
-					if (!state) {
-						return {
-							content: [{ type: "text", text: "No slice-flow workflow in this directory. Start one with /feature <description>." }],
-							details: {},
-						};
+					if (!state || !p) {
+						const tasks = listTasks(ctx.cwd, cfg.workDir);
+						if (tasks.length === 0) return { content: [{ type: "text", text: noTaskHint }], details: {} };
+						const lines = tasks.map((t) => `- ${t.slug}: ${t.state.phase}`).join("\n");
+						return { content: [{ type: "text", text: `Tasks:\n${lines}\n\nPass "slug" to inspect one.` }], details: { tasks: tasks.map((t) => t.slug) } };
 					}
-					return { content: [{ type: "text", text: statusSummary(p, state) }], details: { state } };
+					return { content: [{ type: "text", text: statusSummary(p, state) }], details: { state, slug } };
 				}
 
 				case "abort": {
-					if (!state) throw new Error("No slice-flow workflow to abort.");
-					return { content: [{ type: "text", text: stopped(p, state, params.note ?? "aborted via slice_flow tool") }], details: {} };
-				}
-
-				case "start": {
-					if (!params.description?.trim()) throw new Error("action 'start' requires a non-empty description.");
-					if (isActive(state)) {
-						throw new Error(
-							`A slice-flow workflow is already active (phase: ${state.phase}). Use /feature-resume to continue, ` +
-								`slice_flow({"action":"abort"}) to stop it, or delete ${p.root} to start over.`,
-						);
-					}
-					const baseline = await gitBaseline(pi);
-					if (cfg.gitignoreWorkDir && baseline !== null) ensureGitignored(ctx.cwd, cfg.workDir);
-					const text = startWorkflow(p, cfg, params.description.trim(), baseline);
-					return { content: [{ type: "text", text }], details: { phase: "frame" } };
+					if (!state || !p) throw new Error("No slice-flow task to abort.");
+					return { content: [{ type: "text", text: stopped(p, state, params.note ?? "aborted via slice_flow tool") }], details: { slug } };
 				}
 
 				case "next": {
-					if (!state) throw new Error("No slice-flow workflow in this directory. Start one with /feature <description>.");
+					if (!state || !p) throw new Error(noTaskHint);
 					if (params.note) logEvent(state, `note: ${params.note}`);
 					const text = await nextStep(ctx, p, cfg, state);
-					return { content: [{ type: "text", text }], details: { phase: state.phase } };
+					return { content: [{ type: "text", text }], details: { phase: state.phase, slug } };
+				}
+
+				// --- Frame explore-stage actions (the parent session is the framing partner) ---
+				case "research": {
+					if (!state || !p) throw new Error(noTaskHint);
+					const questions = (params.questions ?? []).map((q) => q.trim()).filter((q) => q.length > 0);
+					if (questions.length === 0) throw new Error(`action 'research' requires a non-empty "questions" array.`);
+					if (params.note) logEvent(state, `note: ${params.note}`);
+					return { content: [{ type: "text", text: startResearch(p, cfg, state, questions) }], details: { phase: state.phase, slug } };
+				}
+
+				case "attack": {
+					if (!state || !p) throw new Error(noTaskHint);
+					if (params.note) logEvent(state, `note: ${params.note}`);
+					return { content: [{ type: "text", text: startAttack(p, cfg, state) }], details: { phase: state.phase, slug } };
+				}
+
+				case "converge": {
+					if (!state || !p) throw new Error(noTaskHint);
+					if (params.note) logEvent(state, `note: ${params.note}`);
+					return { content: [{ type: "text", text: converge(p, cfg, state) }], details: { phase: state.phase, slug } };
 				}
 			}
 		},
@@ -115,8 +179,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "subagent") return;
 		try {
-			const { p, state } = openWorkspace(ctx.cwd);
-			if (isActive(state)) observeSubagentCall(p, event.input);
+			const cfg = loadConfig(ctx.cwd);
+			const slug = inferTaskSlug(ctx.cwd, cfg.workDir, event.input);
+			if (!slug) return;
+			const p = workPaths(ctx.cwd, cfg.workDir, slug);
+			if (isActive(loadState(p))) observeSubagentCall(p, event.input);
 		} catch {
 			/* observability only */
 		}
@@ -125,7 +192,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_result", async (event, ctx) => {
 		if (event.toolName !== "subagent") return;
 		try {
-			const { p, state } = openWorkspace(ctx.cwd);
+			const cfg = loadConfig(ctx.cwd);
+			const slug = inferTaskSlug(ctx.cwd, cfg.workDir, event.input);
+			if (!slug) return;
+			const p = workPaths(ctx.cwd, cfg.workDir, slug);
+			const state = loadState(p);
 			if (isActive(state)) observeSubagentResult(p, state, event.input, event.content);
 		} catch {
 			/* best-effort accounting only */
@@ -134,36 +205,62 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Slash commands --------------------------------------------------------
 	pi.registerCommand("feature-status", {
-		description: "Show the current slice-flow phase and slice",
-		handler: async (_args, ctx) => {
-			const { p, state } = openWorkspace(ctx.cwd);
-			if (!state) {
-				ctx.ui.notify("No slice-flow workflow here. Start one with /feature <description>.", "info");
+		description: "Show slice-flow tasks and their phase (optionally: /feature-status <slug>)",
+		handler: async (args, ctx) => {
+			const cfg = loadConfig(ctx.cwd);
+			const want = args.trim();
+			const tasks = listTasks(ctx.cwd, cfg.workDir);
+			if (tasks.length === 0) {
+				ctx.ui.notify("No slice-flow tasks here. Start one with /feature <description>.", "info");
 				return;
 			}
-			ctx.ui.notify(statusSummary(p, state), "info");
+			const shown = want ? tasks.filter((t) => t.slug === want) : tasks;
+			if (shown.length === 0) {
+				ctx.ui.notify(`No task "${want}". Known: ${tasks.map((t) => t.slug).join(", ")}.`, "warning");
+				return;
+			}
+			const summary = shown.map((t) => statusSummary(workPaths(ctx.cwd, cfg.workDir, t.slug), t.state)).join("\n");
+			ctx.ui.notify(summary, "info");
 		},
 	});
 
 	pi.registerCommand("feature-resume", {
-		description: "Resume the slice-flow workflow from persisted state",
-		handler: async (_args, ctx) => {
-			const { p, state } = openWorkspace(ctx.cwd);
-			if (!state) {
-				ctx.ui.notify("Nothing to resume: no slice-flow state in this directory.", "warning");
+		description: "Resume a slice-flow task from persisted state (optionally: /feature-resume <slug>)",
+		handler: async (args, ctx) => {
+			const cfg = loadConfig(ctx.cwd);
+			const want = args.trim();
+			const tasks = listTasks(ctx.cwd, cfg.workDir);
+			const resumable = tasks.filter((t) => isActive(t.state));
+			if (tasks.length === 0) {
+				ctx.ui.notify("Nothing to resume: no slice-flow tasks in this directory.", "warning");
 				return;
 			}
-			if (state.phase === "done") {
-				ctx.ui.notify("Workflow already complete. Start a new one with /feature.", "info");
+			let target = want ? tasks.find((t) => t.slug === want) : resumable.length === 1 ? resumable[0] : undefined;
+			if (!target && !want) {
+				ctx.ui.notify(
+					resumable.length === 0
+						? "No active task to resume. /feature-status lists all tasks."
+						: `Several tasks are active: ${resumable.map((t) => t.slug).join(", ")}. Run /feature-resume <slug>.`,
+					"warning",
+				);
 				return;
 			}
-			if (state.phase === "stopped") {
-				ctx.ui.notify(`Workflow was stopped. Inspect ${p.report} or delete ${p.root} to start over.`, "warning");
+			if (!target) {
+				ctx.ui.notify(`No task "${want}". Known: ${tasks.map((t) => t.slug).join(", ")}.`, "warning");
+				return;
+			}
+			const p = workPaths(ctx.cwd, cfg.workDir, target.slug);
+			if (target.state.phase === "done") {
+				ctx.ui.notify(`Task "${target.slug}" is already complete. Start a new one with /feature.`, "info");
+				return;
+			}
+			if (target.state.phase === "stopped") {
+				ctx.ui.notify(`Task "${target.slug}" was stopped. Inspect ${p.report} or delete ${p.root} to start over.`, "warning");
 				return;
 			}
 			pi.sendUserMessage(
-				`Resume the slice-flow feature workflow from persisted state. Call slice_flow({"action":"next"}) now and follow its directives exactly: ` +
-					`invoke the subagent tool with the JSON it provides verbatim, then call slice_flow({"action":"next"}) again after each run. ` +
+				`Resume the slice-flow task "${target.slug}" from persisted state. Call slice_flow({"action":"next","slug":"${target.slug}"}) now and follow its directives exactly: ` +
+					`invoke the subagent tool with the JSON it provides verbatim, then call slice_flow({"action":"next","slug":"${target.slug}"}) again after each run. ` +
 					`If artifacts from the interrupted step are missing, the tool will re-issue that step automatically.`,
 			);
 		},

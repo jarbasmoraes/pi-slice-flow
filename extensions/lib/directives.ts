@@ -14,20 +14,25 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SliceFlowConfig } from "./config.ts";
 import {
+	ATTACK_CHARTERS,
 	HYPOTHESIS_ANGLES,
 	architectJudgeBrief,
+	attackBrief,
 	buildBrief,
+	compileBrief,
 	fixupBrief,
-	frameBrief,
+	frameJudgeBrief,
 	hypothesisBrief,
+	intakeBrief,
 	loopFixBrief,
 	planBrief,
 	prototypeBrief,
 	prototypeJudgeBrief,
+	researchBrief,
 	reviewBrief,
 	verifierBrief,
 } from "./briefs.ts";
-import { VERIFY_DIMENSIONS, pad3, priorMemoPaths, sliceArtifacts } from "./workspace.ts";
+import { VERIFY_DIMENSIONS, nextSeqIn, pad3, priorMemoPaths, sliceArtifacts, slugify } from "./workspace.ts";
 import type { Directive, Paths, State, VerifyDimension } from "./workspace.ts";
 
 // --- DRY building blocks -----------------------------------------------------
@@ -78,24 +83,105 @@ export function logDirective(p: Paths, directive: Directive): void {
 
 // --- Phase directives ----------------------------------------------------------
 
-export function frameDirective(p: Paths, state: State, cfg: SliceFlowConfig, notes?: string): Directive {
-	const step = makeBriefStep(p, state, "frame-brief", frameBrief(p, state.feature, notes));
-	const reads = [step.briefPath];
-	if (notes) reads.push(p.frame); // previous frame, for the revision rewrite
+export function intakeDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
+	const step = makeBriefStep(p, state, "intake-brief", intakeBrief(p, state.feature));
 	return {
-		kind: "frame",
+		kind: "intake",
 		seq: state.seq,
-		label: "Phase 1 — FRAME",
-		args: freshChain(p, state.seq, "frame", [
+		label: "Phase 1 — FRAME: intake check",
+		expects: [p.intake],
+		args: freshChain(p, state.seq, "intake", [
 			{
 				agent: "scout",
 				task: step.task,
-				label: "Frame the feature",
+				label: "Intake check",
+				phase: "Frame",
+				reads: [step.briefPath],
+				output: p.intake,
+				...withModel(cfg.models.intake),
+			},
+		]),
+	};
+}
+
+export function researchDirective(p: Paths, state: State, cfg: SliceFlowConfig, questions: string[]): Directive {
+	let seq = nextSeqIn(p.frameResearch);
+	const tasks = questions.map((q) => {
+		const outPath = join(p.frameResearch, `${pad3(seq)}-${slugify(q)}.md`);
+		seq += 1;
+		const step = makeBriefStep(p, state, `research-${slugify(q, 4)}-brief`, researchBrief(state.feature, q, outPath));
+		return {
+			agent: "researcher",
+			task: step.task,
+			label: `Research: ${q.slice(0, 60)}`,
+			reads: [step.briefPath],
+			output: outPath,
+			...withModel(cfg.models.research),
+		};
+	});
+	return {
+		kind: "research",
+		seq: state.seq,
+		label: `Phase 1 — FRAME: research (${questions.length} question${questions.length === 1 ? "" : "s"})`,
+		expects: tasks.map((t) => t.output),
+		args: freshParallel(tasks),
+	};
+}
+
+export function attackDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
+	let seq = nextSeqIn(p.frameAttacks);
+	const tasks = ATTACK_CHARTERS.slice(0, cfg.attackCount).map((charter) => {
+		const outPath = join(p.frameAttacks, `${pad3(seq)}-${charter.id}.md`);
+		seq += 1;
+		const step = makeBriefStep(p, state, `attack-${charter.id}-brief`, attackBrief(p, state.feature, charter, outPath));
+		return {
+			agent: "oracle",
+			task: step.task,
+			label: `Attack: ${charter.id}`,
+			reads: [step.briefPath, p.ledger, p.intake],
+			output: outPath,
+			...withModel(cfg.models.attack),
+		};
+	});
+	return {
+		kind: "attack",
+		seq: state.seq,
+		label: `Phase 1 — FRAME: adversarial attack (${tasks.length} charters)`,
+		expects: tasks.map((t) => t.output),
+		args: freshParallel(tasks),
+	};
+}
+
+export function compileDirective(p: Paths, state: State, cfg: SliceFlowConfig, notes?: string): Directive {
+	const compileStep = makeBriefStep(p, state, "frame-compile-brief", compileBrief(p, state.feature, notes));
+	const compileReads = [compileStep.briefPath, p.intake, p.ledger];
+	if (notes) compileReads.push(p.frame, p.frameJudgement); // recompile: previous attempt + judge findings
+	const judgeStep = makeBriefStep(p, state, "frame-judge-brief", frameJudgeBrief(p));
+	return {
+		kind: "frame-compile",
+		seq: state.seq,
+		label: `Phase 1 — FRAME: compile + fidelity judge${notes ? ` (retry ${state.compileRetries})` : ""}`,
+		expects: [p.frame, p.frameJudgement],
+		args: freshChain(p, state.seq, `frame-compile${notes ? `-r${state.compileRetries}` : ""}`, [
+			{
+				agent: "scout",
+				task: compileStep.task,
+				label: "Compile frame from ledger",
 				phase: "Frame",
 				skill: "zinsser-framing",
-				reads,
+				reads: compileReads,
 				output: p.frame,
-				...withModel(cfg.models.frame),
+				...withModel(cfg.models.compile),
+			},
+			{
+				agent: "oracle",
+				task: judgeStep.task,
+				label: "Judge frame fidelity",
+				phase: "Frame",
+				// p.frame is (re)written by the compile step before this one launches.
+				reads: [judgeStep.briefPath, p.ledger, p.frame],
+				output: p.frameJudgement,
+				...withModel(cfg.models.frameJudge),
 			},
 		]),
 	};
