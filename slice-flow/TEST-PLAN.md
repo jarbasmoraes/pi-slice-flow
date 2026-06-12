@@ -39,6 +39,9 @@ Create `slice-flow.json` in the toy repo so the whole run uses a cheap model
 ```json
 {
   "models": {
+    "attack": "anthropic/claude-haiku-4-5",
+    "compile": "anthropic/claude-haiku-4-5",
+    "frameJudge": "anthropic/claude-haiku-4-5",
     "architectJudge": "anthropic/claude-haiku-4-5",
     "prototypeJudge": "anthropic/claude-haiku-4-5",
     "plan": "anthropic/claude-haiku-4-5",
@@ -53,7 +56,7 @@ Create `slice-flow.json` in the toy repo so the whole run uses a cheap model
 shows `"model": "anthropic/claude-haiku-4-5"` on the judge step — proving the
 per-phase model config is honored.
 
-## 2. Phase 1 — frame + gate
+## 2. Phase 1 — frame v2 (intake → explore → compile → gate)
 
 In pi:
 
@@ -61,22 +64,45 @@ In pi:
 /feature add a --shout flag to greet.js that uppercases the greeting, with tests
 ```
 
-**Check, while it runs:** the parent agent calls `slice_flow` then `subagent`
-with a chain whose only step is `agent: "scout"`, `skill: "zinsser-framing"`,
-`context: "fresh"` (inspect `feature-work/logs/001-directive-frame.json` and
-`logs/calls/`).
+**2a. Intake.** The parent calls `slice_flow` then `subagent` with a chain whose
+only step is `agent: "scout"` with `context: "fresh"` (inspect
+`feature-work/logs/001-directive-intake.json` and `logs/calls/`). After it,
+`feature-work/frame/00-intake.md` exists with a first line
+`INTAKE: SUFFICIENT` or `INTAKE: QUESTIONS`, and `state.json` has
+`"frameStage": "explore"`. `.gitignore` now contains `feature-work/`.
 
-**Check, at the pause:** a TUI select appears ("approve the frame?").
-Before answering, verify:
+**2b. Explore.** The parent now behaves as the framing partner: it asks the
+intake questions (when present) and converses instead of issuing directives.
+Verify it writes `feature-work/frame/ledger.md` as you talk.
 
-- `feature-work/01-frame.md` exists, has the four sections, bullets are
-  single sentences, and cites `greet.js`.
-- `feature-work/state.json` has `"phase": "frame"`.
-- `.gitignore` now contains `feature-work/`.
+**2c. Research.** Say "research how other CLIs name shout/uppercase flags".
+**Check:** the parent calls `slice_flow({"action":"research", ...})`, the
+directive fans out `agent: "researcher"` tasks, and sourced findings land in
+`feature-work/frame/research/NNN-*.md`; the partner summarizes them with
+sources and records conclusions in the ledger. (This exercises the package's
+own `web_search`/`fetch_content` tools — no API keys.)
 
-Choose **Request changes**, type "mention greet.test.js in the current-behavior
-section". **Check:** a new frame directive is issued whose brief (in `logs/`)
-contains your note; after the re-run, approve.
+**2d. Attack.** Say "attack this framing". **Check:** three `agent: "oracle"`
+tasks run (wrong-problem, simpler-alternative, breaks-existing), reports land
+in `feature-work/frame/attacks/`, and the partner walks you through the
+objections, recording dispositions in the ledger.
+
+**2e. Converge guard.** Before any ledger exists (fresh run), "converge"
+must be refused with a message about the empty ledger.
+
+**2f. Compile + validate.** Say you are satisfied; the partner calls
+`converge`. **Check:** a two-step chain runs (scout compiler with
+`skill: "zinsser-framing"`, then oracle fidelity judge), producing
+`01-frame.md` (with `## Acceptance criteria`, `## Out of scope`,
+`## Open questions`) and `frame/judgement.md` starting `VERDICT: PASS`.
+If the compile is bad (hedge words / missing sections), a recompile is issued
+automatically (max 2 — watch for "retry 1/2" in the response).
+
+**2g. Gate.** A TUI select appears ("approve the frame?"). Choose **Request
+changes**, type "mention greet.test.js in the current-behavior section".
+**Check:** your note is appended to `frame/ledger.md` under "Gate feedback"
+and the workflow returns to explore (no recompile directive yet). Work the
+feedback, converge again, then approve.
 
 ## 3. Phase 2 — architecture fan-out + judge
 
@@ -179,9 +205,11 @@ cd /tmp/slice-flow-toy && rm -rf feature-work
 pi -p 'Start the slice-flow workflow: call slice_flow({"action":"start","description":"add --version flag"}), run the subagent call it returns, then call slice_flow({"action":"next"})'
 ```
 
-**Check:** the run pauses at the frame gate with the PAUSED message (no silent
-auto-approval). Then set `"autoApprove": true` in `slice-flow.json`, re-run,
-and confirm the gate is skipped (UI question defaults to "none").
+**Check:** with no user to converse with, the agent self-explores (writes
+`frame/ledger.md` from the description and code, runs one attack round,
+converges), and the run pauses at the frame gate with the PAUSED message (no
+silent auto-approval). Then set `"autoApprove": true` in `slice-flow.json`,
+re-run, and confirm the gate is skipped (UI question defaults to "none").
 
 ## 11. Double-start guard
 

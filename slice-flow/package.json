@@ -13,7 +13,8 @@
   "license": "MIT",
   "pi": {
     "extensions": [
-      "./extensions/slice-flow.ts"
+      "./extensions/slice-flow.ts",
+      "./extensions/web-research.ts"
     ],
     "skills": [
       "./skills"
