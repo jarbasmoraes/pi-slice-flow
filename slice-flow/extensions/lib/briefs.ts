@@ -24,22 +24,126 @@ export const HYPOTHESIS_ANGLES: HypothesisAngle[] = [
 const revisionFooter = (notes?: string, extra = "") =>
 	notes ? `\nUser revision notes from the previous round${extra}:\n${notes}` : "";
 
-export function frameBrief(p: Paths, feature: string, notes?: string): string {
-	return `# FRAME the feature
+// --- Frame v2 briefs (intake -> explore -> compile -> validate) ---------------
+
+export function intakeBrief(p: Paths, feature: string): string {
+	return `# Intake check: is this feature description ready to frame?
 
 Feature request: ${feature}
 
-You are the framing agent for a feature workflow. Apply the injected zinsser-framing skill.
+You are the intake classifier for a feature workflow. The description above is the prompt the entire workflow scales from; your job is to decide whether it is sufficient to start framing, and if not, to produce ONE batch of clarifying questions to ask the human now, while they are present.
 
-1. Review the existing code relevant to this feature: entry points, current behavior, the modules a change would touch. Cite real file paths.
-2. Your final answer must be the complete frame document (it is saved automatically to ${p.frame}). Required sections, each as single-sentence declarative bullet points:
-   - **Problem** — what is wrong or missing.
-   - **What the code does today** — current behavior with file references.
-   - **Proposed solution** — what will change.
-   - **Why this solves the problem** — the causal link, bullet by bullet.
+1. Take a quick look at the repository (entry points, README, the modules this feature would plausibly touch) so your questions are informed, not generic. Spend little time; this is triage, not research.
+2. Assess the description against this checklist:
+   - **Outcome** — does it say what should be true when the feature is done?
+   - **Users** — is it clear who or what consumes the change?
+   - **Constraints** — are known constraints stated (compatibility, performance, scope)?
+   - **Definition of done** — is there anything testable to verify against?
+3. Your final answer is saved automatically to ${p.intake}. Its very first line MUST be exactly "INTAKE: SUFFICIENT" or "INTAKE: QUESTIONS" — nothing before it. Then:
+   - **Summary** — your reading of the request in 2-4 single-sentence bullets.
+   - **Checklist** — one line per checklist item: met or not met, and why.
+   - **Questions** — only when the marker is QUESTIONS: a numbered batch of specific questions, each answerable in one sentence. Never more than 6.
 
-Do not edit any project files. Do not include filler, hedging, or process narration in the document.
-${notes ? `\nRevision requested by the user — address these notes and rewrite the full document:\n${notes}\nYour previous frame is injected for reference.` : ""}`;
+Do not edit any project files.`;
+}
+
+export function researchBrief(feature: string, question: string, outPath: string): string {
+	return `# Frame research: ${question}
+
+Context: this research supports the FRAMING of the feature "${feature}". The human and their framing partner need grounded domain knowledge to decide what to build, not implementation detail.
+
+Research question: ${question}
+
+Rules in addition to your researcher defaults:
+- Prefer primary sources: official docs, specs, source repositories, benchmarks.
+- Never substitute memory for a citation. If a fetch fails or a source cannot be reached, record it as "Source unavailable: <url>" — do not summarize it from recall.
+- Answer the question as asked; flag adjacent discoveries in Gaps instead of chasing them.
+- Keep the brief under ~150 lines; the reader is a conversation, not an archive.
+
+Your final answer is saved automatically to ${outPath}.`;
+}
+
+export interface AttackCharter {
+	id: string;
+	brief: string;
+}
+
+export const ATTACK_CHARTERS: AttackCharter[] = [
+	{
+		id: "wrong-problem",
+		brief: "Argue that this framing solves the WRONG PROBLEM: the stated problem is a symptom, the real need is elsewhere, or the outcome would not satisfy the people it is for.",
+	},
+	{
+		id: "simpler-alternative",
+		brief: "Argue that a MATERIALLY SIMPLER alternative reaches the same outcome: less code, an existing tool, a config change, or doing nothing.",
+	},
+	{
+		id: "breaks-existing",
+		brief: "Argue that the proposed direction BREAKS OR DEGRADES something that already exists: current behavior, performance, conventions, or downstream consumers. Check the actual code.",
+	},
+];
+
+export function attackBrief(p: Paths, feature: string, charter: AttackCharter, outPath: string): string {
+	return `# Attack the framing: ${charter.id}
+
+Feature being framed: ${feature}
+
+You are a fresh-context adversary. You have NOT taken part in the framing conversation and owe it no agreement. Your single charter: ${charter.brief}
+
+Evidence available to you:
+- The decision ledger and intake assessment are injected.
+- Research findings, if any, live under ${p.frameResearch}/ — list and read them.
+- The repository itself — ground claims about existing behavior in real files.
+
+Produce your strongest honest case as numbered objections. For each:
+1. **Objection** — one declarative sentence.
+2. **Evidence** — the file, source, or ledger entry that supports it.
+3. **What would resolve it** — the answer, fact, or change that would make this objection go away.
+
+Raise only objections you can support; an adversary who pads with weak objections gets ignored. If the framing genuinely survives your charter, say so in one line and explain what convinced you. Your final answer is saved automatically to ${outPath}.
+
+Do not edit any files.`;
+}
+
+export function compileBrief(p: Paths, feature: string, notes?: string): string {
+	return `# Compile the frame document
+
+Feature: ${feature}
+
+You are the frame compiler. A human and their framing partner explored this feature and recorded everything in the decision ledger (injected). Your job is COMPRESSION, not creation: turn the ledger into the frame document, following the injected zinsser-framing skill exactly (structure, writing rules, and the acceptance-criteria contract are all defined there).
+
+Sources, in order of authority:
+1. The decision ledger (injected) — every decision in your document must trace to it; invent nothing.
+2. The intake assessment (injected).
+3. Research findings under ${p.frameResearch}/ and attack reports under ${p.frameAttacks}/ — list and read whatever exists.
+4. The repository — verify file claims before writing them.
+
+Hard rules:
+- Every decision, rejected alternative, and open question in the ledger appears in the document; nothing in the document lacks a ledger basis.
+- Unresolved open questions are carried into "## Open questions", never silently dropped.
+- Acceptance criteria are numbered and individually testable: a verifier must be able to check each one against the diff and say yes or no.
+
+Your final answer must be the complete frame document (saved automatically to ${p.frame}). Do not edit any project files.${notes ? `\n\nThis is a RECOMPILE. The previous attempt failed validation; fix these findings and rewrite the full document (previous frame and judge report are injected):\n${notes}` : ""}`;
+}
+
+export function frameJudgeBrief(p: Paths): string {
+	return `# Judge the frame compilation for fidelity
+
+The decision ledger and the compiled frame document (${p.frame}) are injected. Research findings live under ${p.frameResearch}/ and attack reports under ${p.frameAttacks}/ — list and read whatever exists.
+
+You are the fidelity judge. You do NOT judge whether the framing is wise — the human made those calls with adversarial help during exploration. You judge ONE question: is the document a faithful, lossless compression of the ledger?
+
+FAIL conditions (any one suffices):
+- The document states a decision, constraint, or claim with no basis in the ledger, intake, or research.
+- A ledger decision or rejected alternative is missing from the document.
+- An unresolved open question from the ledger was dropped instead of carried into "## Open questions".
+- An acceptance criterion is not individually testable against a future diff.
+- A "What the code does today" claim cites a file that does not say what the document claims (spot-check the repository).
+
+${VERDICT_RULE}
+After the verdict line, list each finding: the document section, the ledger entry (or its absence), and the discrepancy in one sentence. Your final answer is saved automatically to ${p.frameJudgement}.
+
+Do not edit any files.`;
 }
 
 export function hypothesisBrief(p: Paths, a: HypothesisAngle, notes?: string): string {

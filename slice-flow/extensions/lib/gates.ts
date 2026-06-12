@@ -40,7 +40,7 @@ export async function askUiShape(ctx: GateContext, cfg: SliceFlowConfig): Promis
 	return choice.startsWith("No UI") ? "none" : choice.startsWith("New UI") ? "greenfield" : "existing";
 }
 
-export const PAUSE_MSG = (artifact: string) =>
+export const PAUSE_MSG = (artifact: string, slug?: string) =>
 	`PAUSED awaiting human approval of ${artifact}. No approval was captured (no interactive UI, or the dialog was dismissed). ` +
-	`Tell the user to review the document and then either call slice_flow({"action":"next"}) again in an interactive session, ` +
+	`Tell the user to review the document and then either call slice_flow({"action":"next"${slug ? `,"slug":"${slug}"` : ""}}) again in an interactive session, ` +
 	`or set "autoApprove": true in slice-flow.json for unattended runs. End your turn now.`;

@@ -8,7 +8,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface SliceFlowModels {
-	frame: string | null;
+	intake: string | null;
+	research: string | null;
+	attack: string | null;
+	compile: string | null;
+	frameJudge: string | null;
 	hypothesis: string | null;
 	architectJudge: string | null;
 	prototype: string | null;
@@ -21,9 +25,12 @@ export interface SliceFlowModels {
 }
 
 export interface SliceFlowConfig {
+	/** Container dir (under cwd) that holds one slug-named folder per task. */
 	workDir: string;
 	hypothesisCount: number;
 	prototypeCount: number;
+	attackCount: number;
+	maxCompileRetries: number;
 	maxLoopIterations: number;
 	maxFixupsPerSlice: number;
 	loopTokenBudget: number;
@@ -36,9 +43,11 @@ export interface SliceFlowConfig {
 /** Defaults: cheap model for discovery and fix-ups, strong model for
  * architecture judging and verification, session default (null) for build. */
 export const DEFAULT_CONFIG: SliceFlowConfig = {
-	workDir: "feature-work",
+	workDir: ".pi/task",
 	hypothesisCount: 3,
 	prototypeCount: 5,
+	attackCount: 3,
+	maxCompileRetries: 2,
 	maxLoopIterations: 5,
 	maxFixupsPerSlice: 2,
 	loopTokenBudget: 1_500_000,
@@ -46,7 +55,11 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	autoApprove: false,
 	gitignoreWorkDir: true,
 	models: {
-		frame: "anthropic/claude-haiku-4-5",
+		intake: "anthropic/claude-haiku-4-5",
+		research: "anthropic/claude-haiku-4-5",
+		attack: null,
+		compile: null,
+		frameJudge: "anthropic/claude-opus-4-8",
 		hypothesis: "anthropic/claude-haiku-4-5",
 		architectJudge: "anthropic/claude-opus-4-8",
 		prototype: "anthropic/claude-haiku-4-5",

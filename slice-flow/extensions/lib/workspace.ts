@@ -1,7 +1,9 @@
 /**
  * The workflow's domain model and its persistence: state, paths, and every
- * read/write of the ./feature-work/ tree. Nothing here knows about prompts,
- * subagent call shapes, or Pi APIs — it only answers "what is true on disk?".
+ * read/write of the .pi/task/<slug>/ tree. Each task lives in its own
+ * slug-named folder under the container dir, so several can be active at once.
+ * Nothing here knows about prompts, subagent call shapes, or Pi APIs — it only
+ * answers "what is true on disk?".
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -12,20 +14,27 @@ export type VerifyDimension = (typeof VERIFY_DIMENSIONS)[number];
 
 export type Phase = "frame" | "architect" | "prototype" | "plan" | "implement" | "verify" | "loop" | "done" | "stopped";
 
+/** Sub-states of the frame phase (Frame v2: intake -> explore -> compile -> gate). */
+export type FrameStage = "intake" | "explore" | "compile" | "gate";
+
 export interface Directive {
-	kind: string; // frame | architect | prototype | plan | build | fixup | verify | loop-fix
+	kind: string; // intake | research | attack | frame-compile | architect | prototype | plan | build | fixup | verify | loop-fix
 	seq: number;
 	label: string;
 	args: Record<string, unknown>; // exact subagent tool input
+	expects?: string[]; // artifact files this directive must produce (validated on `next`)
 }
 
 export interface State {
 	version: 1;
 	feature: string;
+	slug: string; // task folder name under the container dir (.pi/task/<slug>/)
 	createdAt: string;
 	updatedAt: string;
 	baselineCommit: string | null;
 	phase: Phase;
+	frameStage: FrameStage;
+	compileRetries: number;
 	pending: Directive | null;
 	ui: "none" | "greenfield" | "existing" | null;
 	slices: string[]; // slice file basenames, in order
@@ -51,14 +60,25 @@ export interface Paths {
 	reviews: string;
 	verify: string;
 	prototypes: string;
+	frameDir: string;
+	intake: string;
+	ledger: string;
+	frameResearch: string;
+	frameAttacks: string;
+	frameJudgement: string;
 	frame: string;
 	architecture: string;
 	plan: string;
 	report: string;
 }
 
-export function workPaths(cwd: string, workDir: string): Paths {
-	const root = resolve(cwd, workDir);
+/** Absolute path of the container that holds every task's slug folder. */
+export function tasksContainer(cwd: string, workDir: string): string {
+	return resolve(cwd, workDir);
+}
+
+export function workPaths(cwd: string, workDir: string, slug: string): Paths {
+	const root = resolve(cwd, workDir, slug);
 	return {
 		root,
 		state: join(root, "state.json"),
@@ -71,6 +91,12 @@ export function workPaths(cwd: string, workDir: string): Paths {
 		reviews: join(root, "reviews"),
 		verify: join(root, "verify"),
 		prototypes: join(root, "prototypes"),
+		frameDir: join(root, "frame"),
+		intake: join(root, "frame", "00-intake.md"),
+		ledger: join(root, "frame", "ledger.md"),
+		frameResearch: join(root, "frame", "research"),
+		frameAttacks: join(root, "frame", "attacks"),
+		frameJudgement: join(root, "frame", "judgement.md"),
 		frame: join(root, "01-frame.md"),
 		architecture: join(root, "02-architecture.md"),
 		plan: join(root, "03-plan.md"),
@@ -79,20 +105,37 @@ export function workPaths(cwd: string, workDir: string): Paths {
 }
 
 export function ensureWorkTree(p: Paths): void {
-	for (const dir of [p.root, p.logs, p.calls, p.chains, p.arch, p.slices, p.memos, p.reviews, p.verify, p.prototypes]) {
+	for (const dir of [
+		p.root,
+		p.logs,
+		p.calls,
+		p.chains,
+		p.arch,
+		p.slices,
+		p.memos,
+		p.reviews,
+		p.verify,
+		p.prototypes,
+		p.frameDir,
+		p.frameResearch,
+		p.frameAttacks,
+	]) {
 		mkdirSync(dir, { recursive: true });
 	}
 }
 
-export function createState(feature: string, baselineCommit: string | null): State {
+export function createState(feature: string, slug: string, baselineCommit: string | null): State {
 	const now = new Date().toISOString();
 	return {
 		version: 1,
 		feature,
+		slug,
 		createdAt: now,
 		updatedAt: now,
 		baselineCommit,
 		phase: "frame",
+		frameStage: "intake",
+		compileRetries: 0,
 		pending: null,
 		ui: null,
 		slices: [],
@@ -125,6 +168,73 @@ export function isActive(state: State | null): state is State {
 	return state !== null && state.phase !== "done" && state.phase !== "stopped";
 }
 
+// --- Multiple tasks: discovery, resolution, and slug allocation --------------
+
+/** One task on disk: its slug folder name and the state it persisted. */
+export interface TaskRef {
+	slug: string;
+	state: State;
+}
+
+/** Every task folder under the container that holds a readable state.json. */
+export function listTasks(cwd: string, workDir: string): TaskRef[] {
+	const root = tasksContainer(cwd, workDir);
+	if (!existsSync(root)) return [];
+	const out: TaskRef[] = [];
+	for (const entry of readdirSync(root, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;
+		const stateFile = join(root, entry.name, "state.json");
+		if (!existsSync(stateFile)) continue;
+		try {
+			out.push({ slug: entry.name, state: JSON.parse(readFileSync(stateFile, "utf8")) as State });
+		} catch {
+			/* a half-written or hand-edited state.json should not break discovery */
+		}
+	}
+	return out;
+}
+
+export type TaskResolution =
+	| { kind: "ok"; slug: string }
+	| { kind: "none" }
+	| { kind: "ambiguous"; active: string[] }
+	| { kind: "missing"; slug: string };
+
+/**
+ * Decide which task an action targets. An explicit slug wins (and must exist).
+ * Otherwise the single active task is used; a single dormant task is used when
+ * none are active; two or more active tasks are ambiguous and need a slug.
+ */
+export function resolveActiveTask(cwd: string, workDir: string, slug?: string): TaskResolution {
+	const tasks = listTasks(cwd, workDir);
+	if (slug) return tasks.some((t) => t.slug === slug) ? { kind: "ok", slug } : { kind: "missing", slug };
+	const active = tasks.filter((t) => isActive(t.state));
+	if (active.length === 1) return { kind: "ok", slug: active[0].slug };
+	if (active.length > 1) return { kind: "ambiguous", active: active.map((t) => t.slug) };
+	if (tasks.length === 1) return { kind: "ok", slug: tasks[0].slug };
+	return { kind: "none" };
+}
+
+/** A free slug folder for a new task: slugify the feature, suffix on collision. */
+export function allocateSlug(cwd: string, workDir: string, feature: string): string {
+	const root = tasksContainer(cwd, workDir);
+	const base = slugify(feature);
+	let slug = base;
+	for (let n = 2; existsSync(join(root, slug)); n++) slug = `${base}-${n}`;
+	return slug;
+}
+
+/** Best-effort: attribute a subagent call to a task by finding its root path
+ * inside the call arguments (directive args always write under the task root). */
+export function inferTaskSlug(cwd: string, workDir: string, input: unknown): string | null {
+	const root = tasksContainer(cwd, workDir);
+	const hay = JSON.stringify(input ?? "");
+	for (const t of listTasks(cwd, workDir)) {
+		if (hay.includes(join(root, t.slug))) return t.slug;
+	}
+	return null;
+}
+
 // --- Small disk predicates shared across the workflow -----------------------
 
 export function nonEmpty(file: string): boolean {
@@ -140,6 +250,85 @@ export function verdictOf(file: string): "PASS" | "FAIL" | null {
 	if (!existsSync(file)) return null;
 	const match = readFileSync(file, "utf8").match(/VERDICT:\s*(PASS|FAIL)/i);
 	return match ? (match[1].toUpperCase() as "PASS" | "FAIL") : null;
+}
+
+/** First `INTAKE: SUFFICIENT|QUESTIONS` marker in the intake file; null when absent. */
+export function intakeMarkerOf(file: string): "SUFFICIENT" | "QUESTIONS" | null {
+	if (!existsSync(file)) return null;
+	const match = readFileSync(file, "utf8").match(/INTAKE:\s*(SUFFICIENT|QUESTIONS)/i);
+	return match ? (match[1].toUpperCase() as "SUFFICIENT" | "QUESTIONS") : null;
+}
+
+// --- Frame lint: deterministic structure checks before any human or judge ----
+
+export const FRAME_REQUIRED_SECTIONS = [
+	"## Problem",
+	"## What the code does today",
+	"## Proposed solution",
+	"## Why this solves the problem",
+	"## Acceptance criteria",
+	"## Out of scope",
+	"## Open questions",
+] as const;
+
+/** Hedge and filler words banned by the zinsser-framing skill; keep both lists in sync. */
+const FRAME_BANNED_WORDS = /\b(might|could|consider|perhaps|possibly|simply|basically|essentially|robust|seamless|leverage|leveraging|utilize)\b/i;
+
+export interface FrameLint {
+	ok: boolean;
+	findings: string[];
+}
+
+/** Mechanical checks only — structure, banned words, testable-criteria presence.
+ * Substance is judged by the fidelity judge and the human gate, never here. */
+export function lintFrame(file: string): FrameLint {
+	const findings: string[] = [];
+	if (!nonEmpty(file)) return { ok: false, findings: [`${file} is missing or empty`] };
+	const text = readFileSync(file, "utf8");
+	const lines = text.split("\n");
+
+	for (const section of FRAME_REQUIRED_SECTIONS) {
+		if (!lines.some((l) => l.trim().toLowerCase().startsWith(section.toLowerCase()))) {
+			findings.push(`missing required section "${section}"`);
+		}
+	}
+
+	lines.forEach((line, i) => {
+		const trimmed = line.trim();
+		const isContent = trimmed.startsWith("-") || /^\d+\./.test(trimmed);
+		const banned = isContent ? trimmed.match(FRAME_BANNED_WORDS) : null;
+		if (banned) findings.push(`line ${i + 1}: banned hedge/filler word "${banned[1]}"`);
+	});
+
+	const criteriaSection = text.split(/^## /m).find((s) => s.toLowerCase().startsWith("acceptance criteria"));
+	if (criteriaSection && !criteriaSection.split("\n").some((l) => /^\s*(\d+\.|-)\s+\S/.test(l))) {
+		findings.push(`"## Acceptance criteria" has no checklist items`);
+	}
+
+	return { ok: findings.length === 0, findings };
+}
+
+/** Next 3-digit sequence number for NNN-*.md files in a directory. */
+export function nextSeqIn(dir: string): number {
+	if (!existsSync(dir)) return 1;
+	const taken = readdirSync(dir)
+		.map((f) => f.match(/^(\d{3})-/))
+		.filter((m): m is RegExpMatchArray => m !== null)
+		.map((m) => Number(m[1]));
+	return taken.length === 0 ? 1 : Math.max(...taken) + 1;
+}
+
+/** Slug for naming artifact files after a free-text question/topic. */
+export function slugify(text: string, maxWords = 6): string {
+	return (
+		text
+			.toLowerCase()
+			.replace(/[^a-z0-9\s-]/g, "")
+			.trim()
+			.split(/\s+/)
+			.slice(0, maxWords)
+			.join("-") || "untitled"
+	);
 }
 
 export function readVerifyVerdicts(p: Paths): Record<VerifyDimension, "PASS" | "FAIL" | null> {
@@ -208,6 +397,9 @@ export function observeSubagentResult(p: Paths, state: State, input: unknown, co
 
 export function statusSummary(p: Paths, state: State): string {
 	const parts = [`slice-flow: ${state.feature}`, `phase: ${state.phase}`];
+	if (state.phase === "frame") {
+		parts.push(`frame stage: ${state.frameStage}${state.frameStage === "compile" && state.compileRetries > 0 ? ` (retry ${state.compileRetries})` : ""}`);
+	}
 	if (state.phase === "implement" && state.slices.length > 0) {
 		parts.push(`slice: ${state.slices[state.sliceIndex] ?? "?"} (${state.sliceIndex + 1}/${state.slices.length}, fix-up round ${state.fixupRound})`);
 	}

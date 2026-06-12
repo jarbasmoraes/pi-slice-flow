@@ -5,18 +5,21 @@
  * builders, and the narrow gate context — never on Pi's ExtensionAPI.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SliceFlowConfig } from "./config.ts";
 import {
 	architectDirective,
+	attackDirective,
 	buildDirective,
+	compileDirective,
 	fixupDirective,
-	frameDirective,
+	intakeDirective,
 	logDirective,
 	loopDirective,
 	planDirective,
 	prototypeDirective,
+	researchDirective,
 	verifyDirective,
 } from "./directives.ts";
 import { PAUSE_MSG, askUiShape, gate } from "./gates.ts";
@@ -25,6 +28,8 @@ import {
 	VERIFY_DIMENSIONS,
 	createState,
 	ensureWorkTree,
+	intakeMarkerOf,
+	lintFrame,
 	listSliceFiles,
 	logEvent,
 	nonEmpty,
@@ -61,7 +66,7 @@ export function issue(p: Paths, state: State, directive: Directive, preamble = "
 		JSON.stringify(directive.args, null, 2),
 		"```",
 		"",
-		`When the subagent run completes (success or failure), call slice_flow({"action":"next"}). Do not do any of the work yourself.`,
+		`When the subagent run completes (success or failure), call slice_flow({"action":"next","slug":"${state.slug}"}). Do not do any of the work yourself.`,
 		`Full prompt briefs for this step are on disk under ${p.logs}/.`,
 	]
 		.filter((s) => s !== "")
@@ -88,7 +93,7 @@ function reissue(env: Env, missing: string): string {
  */
 async function runGate(env: Env, title: string, artifact: string, onRevise: (notes?: string) => Directive): Promise<string | null> {
 	const g = await gate(env.ctx, env.cfg, title, artifact);
-	if (g.decision === "pause") return PAUSE_MSG(artifact);
+	if (g.decision === "pause") return PAUSE_MSG(artifact, env.state.slug);
 	if (g.decision === "abort") return stopped(env.p, env.state, `user aborted at ${env.pending.kind} gate`);
 	if (g.decision === "revise") {
 		logEvent(env.state, `${env.pending.kind} revision requested`);
@@ -97,17 +102,176 @@ async function runGate(env: Env, title: string, artifact: string, onRevise: (not
 	return null;
 }
 
-// --- Phase handlers --------------------------------------------------------------
+// --- Phase 1 (FRAME v2): intake -> explore -> compile -> validate -> gate --------
 
-async function onFrame(env: Env): Promise<string> {
-	const { p, cfg, state } = env;
+/** The instructions returned whenever the workflow is in the interactive
+ * explore stage. Idempotent: calling `next` with nothing pending repeats it. */
+function exploreMessage(p: Paths, slug: string, preamble = ""): string {
+	const intakeNote =
+		intakeMarkerOf(p.intake) === "QUESTIONS"
+			? `The intake check found the description insufficient — open the conversation by asking the user the questions batch in ${p.intake}.`
+			: `The intake assessment is at ${p.intake}; read it before you begin.`;
+	return [
+		preamble,
+		"## Phase 1 — FRAME: exploration (interactive)",
+		"",
+		"You are now the FRAMING PARTNER, not a relay. Load the framing-partner skill and follow it for stance, ledger format, and convergence criteria.",
+		"",
+		`- ${intakeNote}`,
+		`- Think WITH the user: surface assumptions, name the simpler alternative, ask before asserting. Do not rubber-stamp.`,
+		`- Maintain the decision ledger at ${p.ledger} throughout: every decision, rejected alternative, open question, and research conclusion, as it happens.`,
+		`- Need domain facts or prior art? Call slice_flow({"action":"research","slug":"${slug}","questions":["...", "..."]}) — fresh researcher agents with web access write sourced findings to ${p.frameResearch}/.`,
+		`- Draft framing taking shape in the ledger? Call slice_flow({"action":"attack","slug":"${slug}"}) — fresh adversaries try to break it; review the surviving objections with the user.`,
+		`- When the user agrees the framing is settled, call slice_flow({"action":"converge","slug":"${slug}"}) — a fresh compiler turns the ledger into ${p.frame}.`,
+		"",
+		"Unattended run (no user present to converse with)? Then self-explore: write the ledger from the description, the intake assessment, and the code; run one attack round; disposition every objection in the ledger; converge.",
+		"",
+		"Never write project code, and never write the frame document yourself.",
+	]
+		.filter((s) => s !== "")
+		.join("\n");
+}
+
+/** Enter (or re-enter) the explore stage and persist that fact. */
+function enterExplore(p: Paths, state: State, preamble = ""): string {
+	state.frameStage = "explore";
+	state.pending = null;
+	saveState(p, state);
+	return exploreMessage(p, state.slug, preamble);
+}
+
+function assertExplore(state: State, action: string): void {
+	if (state.phase !== "frame" || state.frameStage !== "explore") {
+		throw new Error(`Action "${action}" is only available during frame exploration (current: phase=${state.phase}, frame stage=${state.frameStage}).`);
+	}
+	if (state.pending) {
+		throw new Error(`A step is already pending (${state.pending.label}). Run it, then call slice_flow({"action":"next","slug":"${state.slug}"}) before "${action}".`);
+	}
+}
+
+export function startResearch(p: Paths, cfg: SliceFlowConfig, state: State, questions: string[]): string {
+	assertExplore(state, "research");
+	logEvent(state, `research requested: ${questions.length} question(s)`);
+	return issue(p, state, researchDirective(p, state, cfg, questions));
+}
+
+export function startAttack(p: Paths, cfg: SliceFlowConfig, state: State): string {
+	assertExplore(state, "attack");
+	if (!nonEmpty(p.ledger)) {
+		throw new Error(`The decision ledger ${p.ledger} is empty — there is no framing to attack yet. Record the draft framing first.`);
+	}
+	logEvent(state, "attack panel requested");
+	return issue(p, state, attackDirective(p, state, cfg));
+}
+
+export function converge(p: Paths, cfg: SliceFlowConfig, state: State): string {
+	assertExplore(state, "converge");
+	if (!nonEmpty(p.ledger)) {
+		throw new Error(`The decision ledger ${p.ledger} is empty. Write it per the framing-partner skill before converging — the compiler builds the frame from the ledger alone.`);
+	}
+	state.frameStage = "compile";
+	state.compileRetries = 0;
+	logEvent(state, "explore converged -> compile");
+	return issue(p, state, compileDirective(p, state, cfg), "Exploration converged. Compiling the frame from the ledger.");
+}
+
+/** Artifacts a research/attack fan-out promised but did not deliver. */
+function missingExpected(env: Env): string[] {
+	return (env.pending.expects ?? []).filter((f) => !nonEmpty(f));
+}
+
+async function onIntake(env: Env): Promise<string> {
+	const { p, state } = env;
+	if (!nonEmpty(p.intake)) return reissue(env, `The intake assessment ${p.intake} was not produced`);
+	logEvent(state, `intake: ${intakeMarkerOf(p.intake) ?? "no marker"}`);
+	return enterExplore(p, state, "Intake check complete.");
+}
+
+async function onResearch(env: Env): Promise<string> {
+	const { p, state, pending } = env;
+	const missing = missingExpected(env);
+	if (missing.length > 0) return reissue(env, `Research output missing: ${missing.join(", ")}`);
+	const files = pending.expects ?? [];
+	logEvent(state, `research complete: ${files.length} file(s)`);
+	return enterExplore(
+		p,
+		state,
+		[
+			"Research complete. Findings:",
+			...files.map((f) => `- ${f}`),
+			"",
+			"Read each file now, give the user a faithful summary of the findings WITH their sources, record the agreed conclusions in the ledger, then continue exploring.",
+		].join("\n"),
+	);
+}
+
+async function onAttack(env: Env): Promise<string> {
+	const { p, state, pending } = env;
+	const missing = missingExpected(env);
+	if (missing.length > 0) return reissue(env, `Attack report missing: ${missing.join(", ")}`);
+	const files = pending.expects ?? [];
+	logEvent(state, `attack complete: ${files.length} report(s)`);
+	return enterExplore(
+		p,
+		state,
+		[
+			"Adversarial attack complete. Reports:",
+			...files.map((f) => `- ${f}`),
+			"",
+			"Read each report now and walk the user through the objections. For each: resolve it, accept it as a scope change, or reject it with a reason — and record the outcome in the ledger. Then continue exploring.",
+		].join("\n"),
+	);
+}
+
+async function onFrameCompiled(env: Env): Promise<string> {
+	const { ctx, p, cfg, state } = env;
 	if (!nonEmpty(p.frame)) return reissue(env, `The frame document ${p.frame} was not produced`);
-	const gated = await runGate(env, "Phase 1 (FRAME) complete — approve the frame?", p.frame, (notes) => frameDirective(p, state, cfg, notes));
-	if (gated !== null) return gated;
+	const judgeVerdict = verdictOf(p.frameJudgement);
+	if (judgeVerdict === null) return reissue(env, `Fidelity judge verdict missing or malformed in ${p.frameJudgement}`);
+	const lint = lintFrame(p.frame);
+
+	if (!lint.ok || judgeVerdict === "FAIL") {
+		if (state.compileRetries < cfg.maxCompileRetries) {
+			state.compileRetries += 1;
+			const notes = [
+				...lint.findings.map((f) => `lint: ${f}`),
+				...(judgeVerdict === "FAIL" ? [`fidelity judge FAILED — full findings in ${p.frameJudgement}`] : []),
+			].join("\n");
+			logEvent(state, `frame validation failed (lint ${lint.ok ? "ok" : "fail"}, judge ${judgeVerdict}) -> recompile ${state.compileRetries}`);
+			return issue(
+				p,
+				state,
+				compileDirective(p, state, cfg, notes),
+				`Frame failed validation. Recompiling (retry ${state.compileRetries}/${cfg.maxCompileRetries}).`,
+			);
+		}
+		logEvent(state, "frame validation still failing after max recompiles -> surfacing to gate");
+	}
+
+	state.frameStage = "gate";
+	saveState(p, state);
+	const warn =
+		!lint.ok || judgeVerdict === "FAIL"
+			? ` WARNING: validation still failing after ${cfg.maxCompileRetries} recompiles (lint: ${lint.ok ? "ok" : lint.findings.length + " findings"}, judge: ${judgeVerdict}; see ${p.frameJudgement}).`
+			: "";
+	const g = await gate(ctx, cfg, `Phase 1 (FRAME) complete — approve the frame?${warn}`, p.frame);
+	if (g.decision === "pause") return PAUSE_MSG(p.frame, state.slug);
+	if (g.decision === "abort") return stopped(p, state, "user aborted at frame gate");
+	if (g.decision === "revise") {
+		appendFileSync(p.ledger, `\n## Gate feedback (${new Date().toISOString()})\n\n${g.notes ?? ""}\n`, "utf8");
+		logEvent(state, "frame gate: changes requested -> back to explore");
+		return enterExplore(
+			p,
+			state,
+			"The user requested changes at the frame gate. Their feedback was appended to the ledger — work through it with the user, update the ledger, then converge again.",
+		);
+	}
 	state.phase = "architect";
 	logEvent(state, "frame approved");
 	return issue(p, state, architectDirective(p, state, cfg), `Frame approved (${p.frame}).`);
 }
+
+// --- Phase handlers (2-6) ----------------------------------------------------------
 
 async function onArchitect(env: Env): Promise<string> {
 	const { ctx, p, cfg, state } = env;
@@ -119,7 +283,7 @@ async function onArchitect(env: Env): Promise<string> {
 	// UI shape decides whether phase 3 starts with prototypes.
 	if (state.ui === null) {
 		const shape = await askUiShape(ctx, cfg);
-		if (shape === null) return PAUSE_MSG("the UI question (interactive session required)");
+		if (shape === null) return PAUSE_MSG("the UI question (interactive session required)", state.slug);
 		state.ui = shape;
 	}
 	logEvent(state, `architecture approved; ui=${state.ui}`);
@@ -181,7 +345,7 @@ async function onSliceReviewed(env: Env): Promise<string> {
 			`${a.sliceId} still FAILS review after ${cfg.maxFixupsPerSlice} fix-up rounds. (See ${a.reviewPath})`,
 			["Run one more fix-up round", "Accept the slice anyway and continue", "Abort workflow"],
 		);
-		if (choice === undefined) return PAUSE_MSG(a.reviewPath);
+		if (choice === undefined) return PAUSE_MSG(a.reviewPath, state.slug);
 		if (choice === "Abort workflow") return stopped(p, state, `user aborted: ${a.sliceId} failing review`);
 		if (choice === "Run one more fix-up round") {
 			state.fixupRound += 1;
@@ -257,7 +421,10 @@ async function onVerified(env: Env): Promise<string> {
 }
 
 const HANDLERS: Record<string, (env: Env) => Promise<string>> = {
-	frame: onFrame,
+	intake: onIntake,
+	research: onResearch,
+	attack: onAttack,
+	"frame-compile": onFrameCompiled,
 	architect: onArchitect,
 	prototype: onPrototype,
 	plan: onPlan,
@@ -269,15 +436,15 @@ const HANDLERS: Record<string, (env: Env) => Promise<string>> = {
 
 // --- Public entry points -----------------------------------------------------------
 
-export function startWorkflow(p: Paths, cfg: SliceFlowConfig, feature: string, baselineCommit: string | null): string {
+export function startWorkflow(p: Paths, cfg: SliceFlowConfig, feature: string, slug: string, baselineCommit: string | null): string {
 	ensureWorkTree(p);
-	const state = createState(feature, baselineCommit);
+	const state = createState(feature, slug, baselineCommit);
 	logEvent(state, `started: ${state.feature}`);
 	return issue(
 		p,
 		state,
-		frameDirective(p, state, cfg),
-		`slice-flow started. State: ${p.state}. Baseline commit: ${baselineCommit ?? "(not a git repo)"}.`,
+		intakeDirective(p, state, cfg),
+		`slice-flow started. Task slug: ${slug} (folder ${p.root}). Pass "slug":"${slug}" on every follow-up slice_flow call. Baseline commit: ${baselineCommit ?? "(not a git repo)"}.`,
 	);
 }
 
@@ -285,6 +452,9 @@ export async function nextStep(ctx: GateContext, p: Paths, cfg: SliceFlowConfig,
 	if (state.phase === "done") return `Workflow already complete. Final docs are under ${p.root}/.`;
 	if (state.phase === "stopped") return `Workflow is stopped. Start fresh with /feature after clearing ${p.root}, or inspect ${p.report}.`;
 	const pending = state.pending;
+	// The explore stage is interactive and has no pending directive; `next` just
+	// repeats the partner instructions (e.g. after /feature-resume).
+	if (!pending && state.phase === "frame" && state.frameStage === "explore") return exploreMessage(p, state.slug);
 	if (!pending) return stopped(p, state, "internal error: no pending directive");
 	const handler = HANDLERS[pending.kind];
 	if (!handler) return stopped(p, state, `unknown pending directive kind "${pending.kind}"`);
