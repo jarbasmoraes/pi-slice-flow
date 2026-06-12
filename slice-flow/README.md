@@ -186,6 +186,23 @@ Notes:
 > `BEGIN OWNER RULES … END OWNER RULES` block reconstructed from your spec.
 > Replace it with your verbatim rules block.
 
+## Code layout
+
+The extension is split by responsibility; each module has one reason to change:
+
+| Module | Owns | Edit it when… |
+|---|---|---|
+| `extensions/slice-flow.ts` | composition root: tool, hooks, slash commands | you add a command or hook |
+| `extensions/lib/config.ts` | defaults + `slice-flow.json` overlay | you add a knob |
+| `extensions/lib/workspace.ts` | state, paths, all `feature-work/` IO | the on-disk contract changes |
+| `extensions/lib/briefs.ts` | every spawned agent's prompt text (pure strings) | you want agents briefed differently |
+| `extensions/lib/directives.ts` | exact `subagent` args; fresh/clarify/chainDir envelope | the pi-subagents call shape changes |
+| `extensions/lib/gates.ts` | TUI approval gates (narrow `GateContext`) | the approval UX changes |
+| `extensions/lib/engine.ts` | the phase state machine | phase order/transitions change |
+
+`npm run check` typechecks against a locally installed pi-coding-agent
+(adjust the absolute paths in `tsconfig.check.json` for your machine).
+
 ## Testing
 
 See [TEST-PLAN.md](TEST-PLAN.md) for a step-by-step plan you can run on a toy

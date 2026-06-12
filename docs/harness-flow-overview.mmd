@@ -1,0 +1,62 @@
+%% High-level flow of the harness development stack recommended in
+%% research/pi-extensibility-report.md.
+%% Legend: INSTALL = installed package, COPY = copied + adapted into the repo,
+%% BUILD = bespoke code we own. Detailed per-area diagrams can branch from this.
+
+flowchart TD
+    operator([Operator runs /wf workflow])
+
+    subgraph guard ["Run guardrails (BUILD)"]
+        preflight["Preflight<br/>run lock + policy regen<br/>manifest + clean-tree checks"]
+        watchdog["Watchdog<br/>transcript-tail + wall-clock<br/>OS-kill on stall"]
+    end
+
+    subgraph orch ["Phase orchestration (INSTALL: rpiv-workflow)"]
+        runner["Pack DSL sequences stages<br/>each phase body = markdown skill"]
+        state[("Per-run JSONL state<br/>resume by run-id")]
+        validator{"Stage validator<br/>artifact exists + fresh<br/>+ child-run evidence"}
+    end
+
+    subgraph deleg ["Delegation (INSTALL: pi-subagents + pi-intercom)"]
+        children["Fresh child agents<br/>chains sequential, parallel fan-out"]
+        writers["Writers in isolated worktrees<br/>output = patch artifacts only"]
+        gates["Acceptance gates: verified<br/>deterministic check scripts"]
+        escalate["need_decision escalation<br/>halt loudly, operator answers,<br/>resume by run-id"]
+    end
+
+    policy["Tool policy, fail-closed<br/>(INSTALL: pi-permission-system)"]
+
+    subgraph judge ["Independent judgment (COPY: judgment-day + verifier agents)"]
+        judges["Two blind judges<br/>never the producers"]
+        verifiers["claim-verifier, diff-auditor,<br/>peer-comparator"]
+        verdict{"Structured verdict"}
+    end
+
+    subgraph land ["Landing pipeline (BUILD)"]
+        compose["Compose patches in<br/>integration worktree,<br/>re-run all checks, commit"]
+        review["Pre-landing review<br/>on the composed tree"]
+        publish["Publish to main<br/>git merge --ff-only target SHA"]
+    end
+
+    halt([Loud halt: state on disk, fix, resume])
+    done([Main advanced, full audit trail in ADR folders])
+
+    operator --> preflight
+    preflight -->|pass| runner
+    preflight -->|fail| halt
+    runner <--> state
+    runner -->|"dispatch phase skill"| children
+    children --> writers
+    children -.gated by.-> policy
+    writers --> gates
+    writers -.blocked or unclear.-> escalate
+    escalate -.-> halt
+    gates --> validator
+    validator -->|invalid| halt
+    validator -->|valid| judges
+    judges --> verifiers --> verdict
+    verdict -->|APPROVED| compose
+    verdict -->|ESCALATED| halt
+    compose --> review --> publish --> done
+    watchdog -.kills stalled children.-> children
+    halt -.-> operator
