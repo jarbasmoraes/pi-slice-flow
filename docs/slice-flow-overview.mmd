@@ -1,0 +1,95 @@
+%% High-level flow of the slice-flow package as currently implemented
+%% (slice-flow/extensions/). Every agent below is a fresh pi-subagents child
+%% (context: fresh); sequential phases run as chains, fan-outs as parallel
+%% tasks. All state, briefs, and verdicts persist under ./feature-work/,
+%% so the workflow resumes via /feature-resume after a crash or /reload.
+
+flowchart TD
+    start(["/feature &lt;description&gt;"]) --> intake
+
+    subgraph p1 ["PHASE 1 - FRAME (intake / explore / compile / gate)"]
+        intake["INTAKE<br/>cheap scout scores the description<br/>writes frame/00-intake.md<br/>(thin input -&gt; question batch up front)"]
+        explore["EXPLORE (interactive)<br/>main session = framing partner<br/>Socratic + adversarial stance<br/>maintains frame/ledger.md live"]
+        research["parallel researcher agents<br/>web_search + fetch_content (free, no keys)<br/>sourced findings -&gt; frame/research/"]
+        attacks["3 fresh adversaries<br/>wrong-problem / simpler-alternative /<br/>breaks-existing -&gt; frame/attacks/"]
+        compile["COMPILE + VALIDATE<br/>fresh scout compiles ledger -&gt; 01-frame.md<br/>oracle fidelity judge (strong model)<br/>code lint: sections + hedge words + criteria"]
+        fv{"lint + judge<br/>PASS?"}
+        intake --> explore
+        explore -->|"research(questions)"| research --> explore
+        explore -->|attack| attacks --> explore
+        explore -->|converge| compile --> fv
+        fv -->|"FAIL: recompile<br/>(max 2)"| compile
+    end
+
+    gate1{"Gate:<br/>approve frame?"}
+    fv -->|PASS| gate1
+    gate1 -->|"revise: feedback<br/>appended to ledger"| explore
+    gate1 -->|abort| stopped
+
+    subgraph p2 ["PHASE 2 - ARCHITECT"]
+        hypos["3 parallel hypotheses<br/>minimal-change / pattern-aligned / evolvable<br/>each: Mermaid + components + falsifiers"]
+        judge["oracle judge (strong model)<br/>scores fit, simplicity, repo-fit, reversibility<br/>writes 02-architecture.md"]
+        hypos --> judge
+    end
+    gate1 -->|approve| hypos
+    gate2{"Gate:<br/>approve architecture?"}
+    judge --> gate2
+    gate2 -->|"revise (notes)"| hypos
+    gate2 -->|abort| stopped
+
+    uiq{"UI work?"}
+    gate2 -->|approve| uiq
+
+    subgraph p3a ["PHASE 3a - PROTOTYPES (greenfield UI only)"]
+        protos["5 parallel prototype workers<br/>+ ui-prototyping skill"]
+        pjudge["oracle judge picks winner<br/>writes prototypes/JUDGEMENT.md"]
+        protos --> pjudge
+    end
+    uiq -->|"new UI (greenfield)"| protos
+
+    plan["PHASE 3 - PLAN<br/>planner + slice-rules skill<br/>writes 03-plan.md + slices/NNN-*.md<br/>(001 = smallest working MVP, ~100 LOC each)"]
+    uiq -->|no UI| plan
+    uiq -->|"existing UI<br/>+ design-guidelines skill"| plan
+    pjudge --> plan
+
+    gate3{"Gate:<br/>approve slices?"}
+    plan --> gate3
+    gate3 -->|"revise (notes)"| plan
+    gate3 -->|abort| stopped
+
+    subgraph p4 ["PHASE 4 - IMPLEMENT (one slice at a time, in order)"]
+        build["builder (fresh worker) + slice-rules<br/>sees ONLY slice file + prior memos<br/>TDD, one commit, writes memo"]
+        review["reviewer + reviewer-solid skill<br/>writes VERDICT to reviews/"]
+        rv{"VERDICT?"}
+        fix["scoped fix-up + re-review<br/>(max 2 rounds per slice)"]
+        cap{"User choice:<br/>retry / accept / abort"}
+        more{"more slices?"}
+        build --> review --> rv
+        rv -->|FAIL| fix --> rv
+        rv -->|"FAIL after cap"| cap
+        cap -->|retry| fix
+        cap -->|accept anyway| more
+        rv -->|PASS| more
+        more -->|next slice| build
+    end
+    gate3 -->|approve| build
+    cap -->|abort| stopped
+
+    verify["PHASE 5 - VERIFY<br/>5 parallel refuting verifiers (strong model)<br/>code-quality, simplicity, security, evals, tests<br/>VERDICT per dimension in verify/"]
+    more -->|all slices done| verify
+
+    allpass{"all 5 PASS?"}
+    verify --> allpass
+    allpass -->|yes| done
+
+    limits{"within limits?<br/>max 5 iterations<br/>+ token budget"}
+    loop["PHASE 6 - LOOP<br/>scoped fix-up per failed dimension,<br/>then re-verify ONLY failed dimensions"]
+    allpass -->|"FAIL on any dimension"| limits
+    limits -->|yes| loop --> allpass
+    limits -->|"breach: write REPORT.md"| stopped
+
+    state[("./feature-work/<br/>state.json, ledger, briefs, logs, verdicts<br/>resume: /feature-resume")]
+    state -.persists every step.- intake
+
+    done(["DONE - clean pass on all 5 dimensions"])
+    stopped(["STOPPED - state preserved on disk"])
