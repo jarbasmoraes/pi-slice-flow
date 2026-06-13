@@ -31,6 +31,7 @@ export interface SliceFlowConfig {
 	prototypeCount: number;
 	attackCount: number;
 	maxCompileRetries: number;
+	maxArchitectRetries: number;
 	maxLoopIterations: number;
 	maxFixupsPerSlice: number;
 	loopTokenBudget: number;
@@ -48,6 +49,7 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	prototypeCount: 5,
 	attackCount: 3,
 	maxCompileRetries: 2,
+	maxArchitectRetries: 2,
 	maxLoopIterations: 5,
 	maxFixupsPerSlice: 2,
 	loopTokenBudget: 1_500_000,

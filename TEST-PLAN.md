@@ -104,20 +104,43 @@ changes**, type "mention greet.test.js in the current-behavior section".
 and the workflow returns to explore (no recompile directive yet). Work the
 feedback, converge again, then approve.
 
-## 3. Phase 2 — architecture fan-out + judge
+## 3. Phase 2 — architecture fan-out + judge (verdicted handoff)
 
-**Check, at the pause:**
+**Check, at the pause:** (`<task>` = the task folder under `.pi/task/`)
 
-- `feature-work/arch/hypothesis-{1,2,3}.md` all exist; each contains a
+- `<task>/arch/hypothesis-{1,2,3}.md` all exist; each contains a
   ` ```mermaid ` block, components, data flow, and a falsification section.
-- `feature-work/02-architecture.md` names a winner, has a score table
-  (fit/simplicity/repo-patterns/reversibility), and a "why the losers lost"
-  section.
-- The directive JSON shows one chain with a `parallel` group of 3 followed by
-  an `oracle` judge step.
+- `<task>/02-architecture.md` starts with `WINNER: hypothesis-<id>` on the
+  first line, has `## Winner` / `## Scores` (markdown table) /
+  `## Why the losers lost` / `## Risks carried forward`, and a mermaid block.
+- The directive JSON shows one chain with a `parallel` group of 3 (`failFast:
+  true`, `outputMode: "file-only"` per step) followed by an `oracle` judge
+  step, and a top-level `expects` listing all three hypothesis files plus the
+  architecture doc.
+- `state.json` shows `archWinner` set after approval.
 
-Approve. **Check:** the UI question appears; answer **No UI** (this feature is
-a CLI flag).
+**3a. Re-judge on lint failure (injected).** Before calling `next`, overwrite
+`02-architecture.md` with a file missing the `## Scores` heading. **Check:**
+the engine deletes the doc and issues a judge-only directive
+(`*-directive-architect-judge.json` in `logs/`) labeled "re-judge (round 1)";
+the three hypothesis files are untouched. After the re-run produces a valid
+doc, the gate appears. Repeat twice to exhaust `maxArchitectRetries` and
+confirm the gate still appears with a WARNING in its title instead of the
+workflow stopping.
+
+**3b. Scoped revise.** At the gate choose **Request changes**, type a note
+about the winner choice. **Check:** a second select asks what to revise;
+choosing "re-judge the existing 3 hypotheses" issues a judge-only directive
+whose brief (in `logs/`) contains your note, and the hypothesis files keep
+their original timestamps. Choosing "regenerate hypotheses too" instead
+deletes `arch/hypothesis-*.md` and re-issues the full fan-out.
+
+**3c. Approval atomicity.** Approve the architecture, then dismiss the UI
+question dialog (Esc). **Check:** `state.json` has `"archApproved": true`;
+calling `next` again skips straight to the UI question without re-presenting
+the approval gate.
+
+Answer **No UI** (this feature is a CLI flag).
 
 ## 4. Phase 3 — plan + slices gate
 

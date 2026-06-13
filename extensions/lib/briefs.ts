@@ -163,7 +163,7 @@ Review the actual codebase before proposing anything. Then produce ONE architect
 Do not edit any project files.${revisionFooter(notes)}`;
 }
 
-export function architectJudgeBrief(p: Paths, hypothesisCount: number): string {
+export function architectJudgeBrief(p: Paths, hypothesisCount: number, notes?: string): string {
 	return `# Judge the architecture hypotheses
 
 The frame document and ${hypothesisCount} competing architecture hypotheses are injected. You are the judge; you do not design, you decide.
@@ -174,14 +174,16 @@ Score every hypothesis 1-5 on each criterion:
 - **Fit with existing repo patterns** — verify against the actual code, not the hypothesis's own claims.
 - **Reversibility** — how cheaply could this be undone or redirected?
 
-Your final answer must be the complete architecture document (saved automatically to ${p.architecture}):
+The very first line of your final answer MUST be exactly "WINNER: hypothesis-<id>" naming the winning hypothesis — nothing before it. A mechanical lint parses this marker and the section headings below; deviating fails the document.
 
-1. **Winner** — name it, and reproduce its full architecture: summary, Mermaid diagram, components, data flow.
-2. **Scores** — a table of all hypotheses against all criteria.
-3. **Why the losers lost** — per losing hypothesis, the decisive weakness in one or two sentences.
-4. **Risks carried forward** — what the winner's "falsify" section says to watch for.
+Your final answer must be the complete architecture document (saved automatically to ${p.architecture}), with these exact markdown headings:
 
-Do not edit any project files.`;
+## Winner — name it, and reproduce its full architecture: summary, a fenced \`\`\`mermaid diagram, components, data flow.
+## Scores — a markdown table of all hypotheses against all criteria.
+## Why the losers lost — per losing hypothesis, the decisive weakness in one or two sentences.
+## Risks carried forward — what the winner's "falsify" section says to watch for.
+
+Do not edit any project files.${notes ? `\n\nRevision notes — address these in your judgment and rewrite the full document:\n${notes}` : ""}`;
 }
 
 export function prototypeBrief(p: Paths, n: number, total: number): string {

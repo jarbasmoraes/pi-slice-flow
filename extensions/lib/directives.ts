@@ -32,7 +32,7 @@ import {
 	reviewBrief,
 	verifierBrief,
 } from "./briefs.ts";
-import { VERIFY_DIMENSIONS, nextSeqIn, pad3, priorMemoPaths, sliceArtifacts, slugify } from "./workspace.ts";
+import { VERIFY_DIMENSIONS, hypothesisPaths, logEvent, nextSeqIn, pad3, priorMemoPaths, sliceArtifacts, slugify } from "./workspace.ts";
 import type { Directive, Paths, State, VerifyDimension } from "./workspace.ts";
 
 // --- DRY building blocks -----------------------------------------------------
@@ -188,28 +188,37 @@ export function compileDirective(p: Paths, state: State, cfg: SliceFlowConfig, n
 }
 
 export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig, notes?: string): Directive {
-	const angles = HYPOTHESIS_ANGLES.slice(0, cfg.hypothesisCount);
+	// Clamp loudly instead of truncating silently: a throw here would detonate
+	// after the user's frame approval was already consumed.
+	if (cfg.hypothesisCount > HYPOTHESIS_ANGLES.length) {
+		logEvent(state, `warning: hypothesisCount ${cfg.hypothesisCount} exceeds the ${HYPOTHESIS_ANGLES.length} available angles; clamped`);
+	}
+	const angles = HYPOTHESIS_ANGLES.slice(0, Math.max(1, Math.min(cfg.hypothesisCount, HYPOTHESIS_ANGLES.length)));
 	const parallel = angles.map((a) => {
 		const step = makeBriefStep(p, state, `hypothesis-${a.id}-brief`, hypothesisBrief(p, a, notes));
 		return {
 			agent: "scout",
 			task: step.task,
 			label: `Hypothesis ${a.id}: ${a.angle}`,
+			phase: "Architect",
 			reads: [step.briefPath, p.frame],
 			output: join(p.arch, `hypothesis-${a.id}.md`),
+			outputMode: "file-only",
 			...withModel(cfg.models.hypothesis),
 		};
 	});
 
 	const hypoPaths = angles.map((a) => join(p.arch, `hypothesis-${a.id}.md`));
-	const judgeStep = makeBriefStep(p, state, "architect-judge-brief", architectJudgeBrief(p, angles.length));
+	const judgeStep = makeBriefStep(p, state, "architect-judge-brief", architectJudgeBrief(p, angles.length, notes));
 
 	return {
 		kind: "architect",
 		seq: state.seq,
 		label: "Phase 2 — ARCHITECT",
+		expects: [...hypoPaths, p.architecture],
 		args: freshChain(p, state.seq, "architect", [
-			{ parallel, concurrency: angles.length },
+			// failFast: a dead hypothesis stops the chain before the judge spends.
+			{ parallel, concurrency: angles.length, failFast: true },
 			{
 				agent: "oracle",
 				task: judgeStep.task,
@@ -217,6 +226,33 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 				phase: "Architect",
 				reads: [judgeStep.briefPath, p.frame, ...hypoPaths],
 				output: p.architecture,
+				outputMode: "file-only",
+				...withModel(cfg.models.architectJudge),
+			},
+		]),
+	};
+}
+
+/** Re-judge only: one oracle run over the existing (frozen) hypothesis files.
+ * Used for lint retries and selection-level gate revisions, so a malformed or
+ * mis-judged document costs one strong-model run, not a full fan-out. */
+export function architectJudgeDirective(p: Paths, state: State, cfg: SliceFlowConfig, notes?: string): Directive {
+	const hypos = hypothesisPaths(p);
+	const judgeStep = makeBriefStep(p, state, "architect-rejudge-brief", architectJudgeBrief(p, hypos.length, notes));
+	return {
+		kind: "architect-judge",
+		seq: state.seq,
+		label: `Phase 2 — ARCHITECT: re-judge (round ${state.archRetries})`,
+		expects: [p.architecture],
+		args: freshChain(p, state.seq, `architect-rejudge-r${state.archRetries}`, [
+			{
+				agent: "oracle",
+				task: judgeStep.task,
+				label: "Re-judge hypotheses",
+				phase: "Architect",
+				reads: [judgeStep.briefPath, p.frame, ...hypos],
+				output: p.architecture,
+				outputMode: "file-only",
 				...withModel(cfg.models.architectJudge),
 			},
 		]),
