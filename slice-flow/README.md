@@ -81,9 +81,18 @@ PHASE 1  FRAME        five stages:
    ▼
 PHASE 2  ARCHITECT    chain: 3 parallel hypothesis agents (minimal-change,
    │                  pattern-aligned, evolvable; Mermaid + components + data
-   │                  flow + falsifiers) → judge (oracle, strong model) scores
-   │                  fit/simplicity/repo-fit/reversibility → 02-architecture.md
-   │                  ⏸ TUI gate + UI question (none / greenfield / existing)
+   │                  flow + falsifiers; failFast) → judge (oracle, strong
+   │                  model) scores fit/simplicity/repo-fit/reversibility →
+   │                  02-architecture.md with a machine-parsed first line
+   │                  "WINNER: hypothesis-<id>". The engine validates expects
+   │                  (stale files deleted before re-runs) and a structural
+   │                  lint (sections + mermaid + scores table); lint failure →
+   │                  judge-only re-run over the frozen hypotheses (max 2),
+   │                  then the gate shows a warning instead of stopping.
+   │                  ⏸ TUI gate (approval persisted before the UI question;
+   │                  "Request changes" asks what to revise: re-judge only, or
+   │                  regenerate hypotheses too) + UI question (none /
+   │                  greenfield / existing)
    ▼
 PHASE 3  PLAN         greenfield UI: chain of 5 parallel prototype agents
    │                  (ui-prototyping skill) + judge → prototypes/JUDGEMENT.md,
@@ -166,6 +175,7 @@ session's default model.
   "prototypeCount": 5,
   "attackCount": 3,
   "maxCompileRetries": 2,
+  "maxArchitectRetries": 2,
   "maxLoopIterations": 5,
   "maxFixupsPerSlice": 2,
   "loopTokenBudget": 1500000,

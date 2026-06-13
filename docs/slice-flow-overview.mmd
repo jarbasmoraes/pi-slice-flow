@@ -26,15 +26,18 @@ flowchart TD
     gate1 -->|"revise: feedback<br/>appended to ledger"| explore
     gate1 -->|abort| stopped
 
-    subgraph p2 ["PHASE 2 - ARCHITECT"]
-        hypos["3 parallel hypotheses<br/>minimal-change / pattern-aligned / evolvable<br/>each: Mermaid + components + falsifiers"]
-        judge["oracle judge (strong model)<br/>scores fit, simplicity, repo-fit, reversibility<br/>writes 02-architecture.md"]
-        hypos --> judge
+    subgraph p2 ["PHASE 2 - ARCHITECT (verdicted handoff)"]
+        hypos["3 parallel hypotheses (failFast)<br/>minimal-change / pattern-aligned / evolvable<br/>each: Mermaid + components + falsifiers"]
+        judge["oracle judge (strong model)<br/>scores fit, simplicity, repo-fit, reversibility<br/>writes 02-architecture.md<br/>first line: WINNER: hypothesis-N"]
+        alint{"expects + lint:<br/>sections, mermaid,<br/>scores table, WINNER?"}
+        hypos --> judge --> alint
+        alint -->|"FAIL: re-judge over frozen<br/>hypotheses (max 2)"| judge
     end
     gate1 -->|approve| hypos
-    gate2{"Gate:<br/>approve architecture?"}
-    judge --> gate2
-    gate2 -->|"revise (notes)"| hypos
+    gate2{"Gate:<br/>approve architecture?<br/>(approval persisted<br/>before UI question)"}
+    alint -->|"PASS (or retries<br/>exhausted -> warning)"| gate2
+    gate2 -->|"revise: selection only"| judge
+    gate2 -->|"revise: designs too"| hypos
     gate2 -->|abort| stopped
 
     uiq{"UI work?"}

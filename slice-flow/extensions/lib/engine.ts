@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { SliceFlowConfig } from "./config.ts";
 import {
 	architectDirective,
+	architectJudgeDirective,
 	attackDirective,
 	buildDirective,
 	compileDirective,
@@ -28,15 +29,19 @@ import {
 	VERIFY_DIMENSIONS,
 	createState,
 	ensureWorkTree,
+	hypothesisPaths,
 	intakeMarkerOf,
+	lintArchitecture,
 	lintFrame,
 	listSliceFiles,
 	logEvent,
 	nonEmpty,
 	readVerifyVerdicts,
+	removeFiles,
 	saveState,
 	sliceArtifacts,
 	verdictOf,
+	winnerOf,
 } from "./workspace.ts";
 import type { Directive, Paths, State } from "./workspace.ts";
 
@@ -273,20 +278,84 @@ async function onFrameCompiled(env: Env): Promise<string> {
 
 // --- Phase handlers (2-6) ----------------------------------------------------------
 
+/** Handles both the full architect chain and the judge-only re-run. */
 async function onArchitect(env: Env): Promise<string> {
-	const { ctx, p, cfg, state } = env;
-	if (!nonEmpty(p.architecture)) return reissue(env, `The architecture document ${p.architecture} was not produced`);
-	const gated = await runGate(env, "Phase 2 (ARCHITECT) complete — approve the architecture?", p.architecture, (notes) =>
-		architectDirective(p, state, cfg, notes),
-	);
-	if (gated !== null) return gated;
-	// UI shape decides whether phase 3 starts with prototypes.
+	const { ctx, p, cfg, state, pending } = env;
+
+	// 1. Expected artifacts must exist and be fresh: delete leftovers before a
+	// re-issue so this check can never pass on last round's files.
+	const missing = missingExpected(env);
+	if (missing.length > 0) {
+		removeFiles(pending.expects ?? []);
+		return reissue(env, `Architect output missing: ${missing.join(", ")}`);
+	}
+
+	// 2. Deterministic lint + WINNER marker; failures buy a judge-only retry
+	// over the frozen hypotheses (one strong-model run, not a full fan-out).
+	const lint = lintArchitecture(p.architecture);
+	const winner = winnerOf(p.architecture);
+	const valid = lint.ok && winner !== null;
+	if (!valid && !state.archApproved) {
+		if (state.archRetries < cfg.maxArchitectRetries) {
+			state.archRetries += 1;
+			const notes = [
+				...lint.findings.map((f) => `lint: ${f}`),
+				...(winner === null ? [`missing first line "WINNER: hypothesis-<id>"`] : []),
+			].join("\n");
+			logEvent(state, `architecture lint failed -> re-judge ${state.archRetries}/${cfg.maxArchitectRetries}`);
+			removeFiles([p.architecture]);
+			return issue(
+				p,
+				state,
+				architectJudgeDirective(p, state, cfg, notes),
+				`Architecture failed lint. Re-judging over existing hypotheses (retry ${state.archRetries}/${cfg.maxArchitectRetries}).`,
+			);
+		}
+		logEvent(state, "architecture lint still failing after max re-judges -> surfacing to gate");
+	}
+
+	// 3. Gate, with approval persisted BEFORE the UI question so a dismissed
+	// dialog never forces a second approval of the same document.
+	if (!state.archApproved) {
+		const warn = !valid
+			? ` WARNING: lint still failing after ${cfg.maxArchitectRetries} re-judges (${lint.findings.length} findings${winner === null ? ", no WINNER marker" : ""}).`
+			: "";
+		const g = await gate(ctx, cfg, `Phase 2 (ARCHITECT) complete — approve the architecture?${warn}`, p.architecture);
+		if (g.decision === "pause") return PAUSE_MSG(p.architecture, state.slug);
+		if (g.decision === "abort") return stopped(p, state, "user aborted at architect gate");
+		if (g.decision === "revise") {
+			state.archRetries = 0;
+			logEvent(state, "architect revision requested");
+			// Route the revision to what actually needs to change: the judge's
+			// selection/synthesis (cheap) or the hypothesis designs (full re-run).
+			const scope = ctx.hasUI
+				? await ctx.ui.select("What should the revision change?", [
+						"The selection or synthesis — re-judge the existing 3 hypotheses",
+						"The designs themselves — regenerate hypotheses and re-judge",
+					])
+				: undefined;
+			if (scope === undefined) return PAUSE_MSG(p.architecture, state.slug);
+			if (scope.startsWith("The selection")) {
+				state.archRetries += 1;
+				removeFiles([p.architecture]);
+				return issue(p, state, architectJudgeDirective(p, state, cfg, g.notes), "User requested revisions (re-judge only).");
+			}
+			removeFiles([...hypothesisPaths(p), p.architecture]);
+			return issue(p, state, architectDirective(p, state, cfg, g.notes), "User requested revisions (full re-run).");
+		}
+		state.archApproved = true;
+		state.archWinner = winner;
+		logEvent(state, `architecture approved (winner: ${winner ?? "unmarked"})`);
+		saveState(p, state);
+	}
+
+	// 4. UI shape decides whether phase 3 starts with prototypes.
 	if (state.ui === null) {
 		const shape = await askUiShape(ctx, cfg);
 		if (shape === null) return PAUSE_MSG("the UI question (interactive session required)", state.slug);
 		state.ui = shape;
 	}
-	logEvent(state, `architecture approved; ui=${state.ui}`);
+	logEvent(state, `ui=${state.ui}`);
 	if (state.ui === "greenfield") {
 		state.phase = "prototype";
 		return issue(p, state, prototypeDirective(p, state, cfg), "Architecture approved. Greenfield UI: prototyping first.");
@@ -426,6 +495,7 @@ const HANDLERS: Record<string, (env: Env) => Promise<string>> = {
 	attack: onAttack,
 	"frame-compile": onFrameCompiled,
 	architect: onArchitect,
+	"architect-judge": onArchitect,
 	prototype: onPrototype,
 	plan: onPlan,
 	build: onSliceReviewed,

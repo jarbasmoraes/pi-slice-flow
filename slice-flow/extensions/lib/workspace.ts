@@ -6,7 +6,7 @@
  * answers "what is true on disk?".
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const VERIFY_DIMENSIONS = ["code-quality", "simplicity", "security", "evals", "tests"] as const;
@@ -35,6 +35,9 @@ export interface State {
 	phase: Phase;
 	frameStage: FrameStage;
 	compileRetries: number;
+	archRetries: number; // bounded re-judge rounds for the architecture document
+	archApproved: boolean; // gate approval persisted before the UI question (atomicity)
+	archWinner: string | null; // parsed "WINNER: hypothesis-<id>" marker
 	pending: Directive | null;
 	ui: "none" | "greenfield" | "existing" | null;
 	slices: string[]; // slice file basenames, in order
@@ -136,6 +139,9 @@ export function createState(feature: string, slug: string, baselineCommit: strin
 		phase: "frame",
 		frameStage: "intake",
 		compileRetries: 0,
+		archRetries: 0,
+		archApproved: false,
+		archWinner: null,
 		pending: null,
 		ui: null,
 		slices: [],
@@ -152,7 +158,15 @@ export function createState(feature: string, slug: string, baselineCommit: strin
 
 export function loadState(p: Paths): State | null {
 	if (!existsSync(p.state)) return null;
-	return JSON.parse(readFileSync(p.state, "utf8")) as State;
+	const s = JSON.parse(readFileSync(p.state, "utf8")) as State;
+	// Tasks persist across package upgrades; default fields added after a task
+	// was created so a pre-upgrade task resumes instead of crashing on undefined.
+	s.frameStage = s.frameStage ?? "explore";
+	s.compileRetries = s.compileRetries ?? 0;
+	s.archRetries = s.archRetries ?? 0;
+	s.archApproved = s.archApproved ?? false;
+	s.archWinner = s.archWinner ?? null;
+	return s;
 }
 
 export function saveState(p: Paths, state: State): void {
@@ -308,6 +322,51 @@ export function lintFrame(file: string): FrameLint {
 	return { ok: findings.length === 0, findings };
 }
 
+// --- Architecture lint: deterministic structure checks on 02-architecture.md --
+
+export const ARCH_REQUIRED_SECTIONS = ["## Winner", "## Scores", "## Why the losers lost", "## Risks carried forward"] as const;
+
+/** Mechanical checks only — sections, Mermaid diagram, scores table. No banned
+ * words: "could" and "might" are correct vocabulary in a Risks section.
+ * Substance is judged by the human gate and re-checked downstream (plan gate,
+ * slice reviews, verify phase), never here. */
+export function lintArchitecture(file: string): FrameLint {
+	const findings: string[] = [];
+	if (!nonEmpty(file)) return { ok: false, findings: [`${file} is missing or empty`] };
+	const text = readFileSync(file, "utf8");
+	const lines = text.split("\n");
+	for (const section of ARCH_REQUIRED_SECTIONS) {
+		if (!lines.some((l) => l.trim().toLowerCase().startsWith(section.toLowerCase()))) {
+			findings.push(`missing required section "${section}"`);
+		}
+	}
+	if (!/```mermaid/.test(text)) findings.push("missing fenced ```mermaid diagram in the Winner section");
+	if (!lines.some((l) => /^\s*\|.*\|\s*$/.test(l))) findings.push('"## Scores" has no markdown table');
+	return { ok: findings.length === 0, findings };
+}
+
+/** First `WINNER: hypothesis-<id>` marker in the architecture doc; null when absent. */
+export function winnerOf(file: string): string | null {
+	if (!existsSync(file)) return null;
+	const match = readFileSync(file, "utf8").match(/WINNER:\s*(hypothesis-\d+)/i);
+	return match ? match[1].toLowerCase() : null;
+}
+
+/** Hypothesis files currently on disk for this task, in id order. */
+export function hypothesisPaths(p: Paths): string[] {
+	if (!existsSync(p.arch)) return [];
+	return readdirSync(p.arch)
+		.filter((f) => /^hypothesis-\d+\.md$/.test(f))
+		.sort()
+		.map((f) => join(p.arch, f));
+}
+
+/** Delete artifacts before a re-run so `expects` validation proves fresh work,
+ * never last round's leftovers. Paths are task-scoped, so siblings are safe. */
+export function removeFiles(files: string[]): void {
+	for (const f of files) rmSync(f, { force: true });
+}
+
 /** Next 3-digit sequence number for NNN-*.md files in a directory. */
 export function nextSeqIn(dir: string): number {
 	if (!existsSync(dir)) return 1;
@@ -399,6 +458,9 @@ export function statusSummary(p: Paths, state: State): string {
 	const parts = [`slice-flow: ${state.feature}`, `phase: ${state.phase}`];
 	if (state.phase === "frame") {
 		parts.push(`frame stage: ${state.frameStage}${state.frameStage === "compile" && state.compileRetries > 0 ? ` (retry ${state.compileRetries})` : ""}`);
+	}
+	if (state.phase === "architect" && (state.archWinner || state.archRetries > 0)) {
+		parts.push(`architect: winner ${state.archWinner ?? "?"}${state.archRetries > 0 ? `, re-judge round ${state.archRetries}` : ""}`);
 	}
 	if (state.phase === "implement" && state.slices.length > 0) {
 		parts.push(`slice: ${state.slices[state.sliceIndex] ?? "?"} (${state.sliceIndex + 1}/${state.slices.length}, fix-up round ${state.fixupRound})`);
