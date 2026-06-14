@@ -5,8 +5,9 @@
  * builders, and the narrow gate context — never on Pi's ExtensionAPI.
  */
 
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SliceFlowConfig } from "./config.ts";
 import {
 	architectDirective,
@@ -506,6 +507,33 @@ const HANDLERS: Record<string, (env: Env) => Promise<string>> = {
 
 // --- Public entry points -----------------------------------------------------------
 
+/** Absolute path to the package's bundled `agents/` directory. This module
+ * lives at <pkg>/extensions/lib/engine.ts, so the bundle is two levels up. */
+const BUNDLED_AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "agents");
+
+/** Provision slice-flow's six dedicated agents into the project's discovered
+ * directory (<cwd>/.pi/agents/). pi's package manager has no "agents" resource
+ * type, so the bundled `agents/` directory is NOT auto-installed on `pi install`;
+ * this is the real install path. Runs on every workflow start, copying any
+ * bundled `*.md` agent that is missing from the target (existing copies are left
+ * untouched so a user's customizations survive). Returns the file names newly
+ * provisioned; a no-op returning [] when the bundle itself is unavailable
+ * (a genuinely broken install, which the preflight then reports). */
+export function syncBundledAgents(cwd: string, bundleDir: string = BUNDLED_AGENTS_DIR): string[] {
+	if (!existsSync(bundleDir)) return [];
+	const targetDir = join(cwd, ".pi", "agents");
+	mkdirSync(targetDir, { recursive: true });
+	const provisioned: string[] = [];
+	for (const file of readdirSync(bundleDir)) {
+		if (!file.endsWith(".md")) continue;
+		const dest = join(targetDir, file);
+		if (existsSync(dest)) continue;
+		copyFileSync(join(bundleDir, file), dest);
+		provisioned.push(file);
+	}
+	return provisioned;
+}
+
 /** Hard-fail before any phase if a required agent file is absent from the
  * project's discovered agent directory (.pi/agents/), naming each missing one. */
 export function preflightAgents(cwd: string, cfg: SliceFlowConfig): void {
@@ -522,6 +550,7 @@ export function preflightAgents(cwd: string, cfg: SliceFlowConfig): void {
 }
 
 export function startWorkflow(p: Paths, cfg: SliceFlowConfig, feature: string, slug: string, baselineCommit: string | null, cwd: string): string {
+	syncBundledAgents(cwd);
 	preflightAgents(cwd, cfg);
 	ensureWorkTree(p);
 	const state = createState(feature, slug, baselineCommit);

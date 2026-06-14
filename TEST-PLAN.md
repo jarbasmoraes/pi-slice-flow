@@ -27,14 +27,18 @@ pi install /path/to/slice-flow
 pi
 ```
 
-Installing the package provisions slice-flow's six dedicated agents
-(`slice-flow-scout`, `slice-flow-researcher`, `slice-flow-builder`,
-`slice-flow-oracle`, `slice-flow-planner`, `slice-flow-reviewer`) into
-`.pi/agents/` (declared via `package.json` `pi.agents`).
+slice-flow's six dedicated agents (`slice-flow-scout`,
+`slice-flow-researcher`, `slice-flow-builder`, `slice-flow-oracle`,
+`slice-flow-planner`, `slice-flow-reviewer`) ship inside the package under
+`agents/`. pi's package manager has no "agents" resource type, so `pi install`
+does not copy them; the first `/feature` provisions them into `.pi/agents/`
+(see step 2 below). So immediately after `pi install` — before any `/feature` —
+`.pi/agents/` is expected to be empty; that is normal.
 
 **Check:** inside pi, `/feature`, `/feature-status`, and `/feature-resume`
 appear in slash autocomplete, and the `slice_flow` tool loads without errors
-on startup. Also confirm all six agent files are present after `pi install`:
+on startup. After you run `/feature` once (step 2), confirm all six agent files
+were provisioned:
 
 ```bash
 for role in scout researcher builder oracle planner reviewer; do
@@ -253,15 +257,21 @@ else`. **Check:** `slice_flow` errors with "already active" and points to
 
 ## 12. Preflight: missing agent guard
 
+Workflow start re-provisions any missing agent from the bundle, so simply
+deleting `.pi/agents/slice-flow-scout.md` self-heals on the next `/feature` —
+that is the intended behavior. The preflight guards the genuinely broken
+install, where the bundled `agents/` directory is itself unavailable. Simulate
+that by hiding the bundle so provisioning cannot run:
+
 ```bash
 cd /tmp/slice-flow-toy && rm -rf feature-work
-rm .pi/agents/slice-flow-scout.md       # remove one required agent
+mv "$(pi ... path to installed slice-flow)/agents" /tmp/agents-bak   # hide the bundle
 ```
 
 In pi: `/feature add a --quiet flag`.
 
 **Check:** the workflow aborts before any `subagent` call is issued — no
 directive JSON appears under `feature-work/logs/` — and the error message names
-the missing agent (`slice-flow-scout`). Restore the agent (re-run `pi install`,
-or copy it back from `slice-flow/agents/`) and confirm `/feature` then proceeds
-normally.
+the required agents that could not be provisioned. Restore the bundle
+(`mv /tmp/agents-bak .../agents`, or re-run `pi install`) and confirm `/feature`
+then provisions the agents and proceeds normally.
