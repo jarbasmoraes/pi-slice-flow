@@ -92,7 +92,7 @@ export function intakeDirective(p: Paths, state: State, cfg: SliceFlowConfig): D
 		expects: [p.intake],
 		args: freshChain(p, state.seq, "intake", [
 			{
-				agent: "scout",
+				agent: cfg.agents.intake,
 				task: step.task,
 				label: "Intake check",
 				phase: "Frame",
@@ -111,7 +111,7 @@ export function researchDirective(p: Paths, state: State, cfg: SliceFlowConfig, 
 		seq += 1;
 		const step = makeBriefStep(p, state, `research-${slugify(q, 4)}-brief`, researchBrief(state.feature, q, outPath));
 		return {
-			agent: "researcher",
+			agent: cfg.agents.research,
 			task: step.task,
 			label: `Research: ${q.slice(0, 60)}`,
 			reads: [step.briefPath],
@@ -135,7 +135,7 @@ export function attackDirective(p: Paths, state: State, cfg: SliceFlowConfig): D
 		seq += 1;
 		const step = makeBriefStep(p, state, `attack-${charter.id}-brief`, attackBrief(p, state.feature, charter, outPath));
 		return {
-			agent: "oracle",
+			agent: cfg.agents.attack,
 			task: step.task,
 			label: `Attack: ${charter.id}`,
 			reads: [step.briefPath, p.ledger, p.intake],
@@ -164,7 +164,7 @@ export function compileDirective(p: Paths, state: State, cfg: SliceFlowConfig, n
 		expects: [p.frame, p.frameJudgement],
 		args: freshChain(p, state.seq, `frame-compile${notes ? `-r${state.compileRetries}` : ""}`, [
 			{
-				agent: "scout",
+				agent: cfg.agents.compile,
 				task: compileStep.task,
 				label: "Compile frame from ledger",
 				phase: "Frame",
@@ -174,7 +174,7 @@ export function compileDirective(p: Paths, state: State, cfg: SliceFlowConfig, n
 				...withModel(cfg.models.compile),
 			},
 			{
-				agent: "oracle",
+				agent: cfg.agents.frameJudge,
 				task: judgeStep.task,
 				label: "Judge frame fidelity",
 				phase: "Frame",
@@ -197,7 +197,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 	const parallel = angles.map((a) => {
 		const step = makeBriefStep(p, state, `hypothesis-${a.id}-brief`, hypothesisBrief(p, a, notes));
 		return {
-			agent: "scout",
+			agent: cfg.agents.hypothesis,
 			task: step.task,
 			label: `Hypothesis ${a.id}: ${a.angle}`,
 			phase: "Architect",
@@ -220,7 +220,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 			// failFast: a dead hypothesis stops the chain before the judge spends.
 			{ parallel, concurrency: angles.length, failFast: true },
 			{
-				agent: "oracle",
+				agent: cfg.agents.architectJudge,
 				task: judgeStep.task,
 				label: "Judge hypotheses",
 				phase: "Architect",
@@ -246,7 +246,7 @@ export function architectJudgeDirective(p: Paths, state: State, cfg: SliceFlowCo
 		expects: [p.architecture],
 		args: freshChain(p, state.seq, `architect-rejudge-r${state.archRetries}`, [
 			{
-				agent: "oracle",
+				agent: cfg.agents.architectJudge,
 				task: judgeStep.task,
 				label: "Re-judge hypotheses",
 				phase: "Architect",
@@ -264,7 +264,7 @@ export function prototypeDirective(p: Paths, state: State, cfg: SliceFlowConfig)
 		const n = i + 1;
 		const step = makeBriefStep(p, state, `prototype-${n}-brief`, prototypeBrief(p, n, cfg.prototypeCount));
 		return {
-			agent: "worker",
+			agent: cfg.agents.prototype,
 			task: step.task,
 			label: `Prototype ${n}`,
 			reads: [step.briefPath, p.frame, p.architecture],
@@ -283,7 +283,7 @@ export function prototypeDirective(p: Paths, state: State, cfg: SliceFlowConfig)
 		args: freshChain(p, state.seq, "prototype", [
 			{ parallel, concurrency: cfg.prototypeCount },
 			{
-				agent: "oracle",
+				agent: cfg.agents.prototypeJudge,
 				task: judgeStep.task,
 				label: "Judge prototypes",
 				phase: "Prototype",
@@ -308,7 +308,7 @@ export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, note
 		label: "Phase 3 — PLAN",
 		args: freshChain(p, state.seq, "plan", [
 			{
-				agent: "planner",
+				agent: cfg.agents.plan,
 				task: step.task,
 				label: "Write plan and slices",
 				phase: "Plan",
@@ -326,7 +326,7 @@ function reviewStep(p: Paths, state: State, cfg: SliceFlowConfig) {
 	const a = sliceArtifacts(p, state);
 	const step = makeBriefStep(p, state, `${a.sliceId}-review-r${state.fixupRound}-brief`, reviewBrief(a, state.fixupRound));
 	return {
-		agent: "reviewer",
+		agent: cfg.agents.review,
 		task: step.task,
 		label: `Review ${a.sliceId}${state.fixupRound > 0 ? ` (r${state.fixupRound})` : ""}`,
 		phase: "Implement",
@@ -347,7 +347,7 @@ export function buildDirective(p: Paths, state: State, cfg: SliceFlowConfig): Di
 		label: `Phase 4 — BUILD ${a.sliceId} (${state.sliceIndex + 1}/${state.slices.length})`,
 		args: freshChain(p, state.seq, a.sliceId, [
 			{
-				agent: "worker",
+				agent: cfg.agents.build,
 				task: step.task,
 				label: `Build ${a.sliceId}`,
 				phase: "Implement",
@@ -371,7 +371,7 @@ export function fixupDirective(p: Paths, state: State, cfg: SliceFlowConfig): Di
 		label: `Phase 4 — FIX-UP ${a.sliceId} (round ${state.fixupRound})`,
 		args: freshChain(p, state.seq, `${a.sliceId}-fixup-r${state.fixupRound}`, [
 			{
-				agent: "worker",
+				agent: cfg.agents.fixup,
 				task: step.task,
 				label: `Fix-up ${a.sliceId} r${state.fixupRound}`,
 				phase: "Implement",
@@ -388,7 +388,7 @@ export function fixupDirective(p: Paths, state: State, cfg: SliceFlowConfig): Di
 function verifierTask(p: Paths, state: State, cfg: SliceFlowConfig, dim: VerifyDimension) {
 	const step = makeBriefStep(p, state, `verify-${dim}-brief`, verifierBrief(p, dim, state.baselineCommit, cfg.workDir));
 	return {
-		agent: "reviewer",
+		agent: cfg.agents.verify,
 		task: step.task,
 		reads: [step.briefPath, p.frame, p.architecture, p.plan],
 		skill: "verify-rubrics",
@@ -410,7 +410,7 @@ export function loopDirective(p: Paths, state: State, cfg: SliceFlowConfig): Dir
 	const fixSteps = state.failedDimensions.map((dim) => {
 		const step = makeBriefStep(p, state, `loop-${state.loopIteration}-fix-${dim}-brief`, loopFixBrief(p, dim, state.loopIteration, cfg.autoCommit));
 		return {
-			agent: "worker",
+			agent: cfg.agents.fixup,
 			task: step.task,
 			label: `Fix ${dim} (loop ${state.loopIteration})`,
 			phase: "Loop",
