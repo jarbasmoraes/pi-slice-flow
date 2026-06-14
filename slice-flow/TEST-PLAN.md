@@ -27,9 +27,20 @@ pi install /path/to/slice-flow
 pi
 ```
 
+Installing the package provisions slice-flow's six dedicated agents
+(`slice-flow-scout`, `slice-flow-researcher`, `slice-flow-builder`,
+`slice-flow-oracle`, `slice-flow-planner`, `slice-flow-reviewer`) into
+`.pi/agents/` (declared via `package.json` `pi.agents`).
+
 **Check:** inside pi, `/feature`, `/feature-status`, and `/feature-resume`
 appear in slash autocomplete, and the `slice_flow` tool loads without errors
-on startup.
+on startup. Also confirm all six agent files are present after `pi install`:
+
+```bash
+for role in scout researcher builder oracle planner reviewer; do
+  test -f .pi/agents/slice-flow-$role.md && echo "ok slice-flow-$role" || echo "MISSING slice-flow-$role"
+done
+```
 
 ## 1. Smoke: cheap-model config
 
@@ -65,7 +76,7 @@ In pi:
 ```
 
 **2a. Intake.** The parent calls `slice_flow` then `subagent` with a chain whose
-only step is `agent: "scout"` with `context: "fresh"` (inspect
+only step is `agent: "slice-flow-scout"` with `context: "fresh"` (inspect
 `feature-work/logs/001-directive-intake.json` and `logs/calls/`). After it,
 `feature-work/frame/00-intake.md` exists with a first line
 `INTAKE: SUFFICIENT` or `INTAKE: QUESTIONS`, and `state.json` has
@@ -77,12 +88,12 @@ Verify it writes `feature-work/frame/ledger.md` as you talk.
 
 **2c. Research.** Say "research how other CLIs name shout/uppercase flags".
 **Check:** the parent calls `slice_flow({"action":"research", ...})`, the
-directive fans out `agent: "researcher"` tasks, and sourced findings land in
+directive fans out `agent: "slice-flow-researcher"` tasks, and sourced findings land in
 `feature-work/frame/research/NNN-*.md`; the partner summarizes them with
 sources and records conclusions in the ledger. (This exercises the package's
 own `web_search`/`fetch_content` tools — no API keys.)
 
-**2d. Attack.** Say "attack this framing". **Check:** three `agent: "oracle"`
+**2d. Attack.** Say "attack this framing". **Check:** three `agent: "slice-flow-oracle"`
 tasks run (wrong-problem, simpler-alternative, breaks-existing), reports land
 in `feature-work/frame/attacks/`, and the partner walks you through the
 objections, recording dispositions in the ledger.
@@ -91,8 +102,8 @@ objections, recording dispositions in the ledger.
 must be refused with a message about the empty ledger.
 
 **2f. Compile + validate.** Say you are satisfied; the partner calls
-`converge`. **Check:** a two-step chain runs (scout compiler with
-`skill: "zinsser-framing"`, then oracle fidelity judge), producing
+`converge`. **Check:** a two-step chain runs (`slice-flow-scout` compiler with
+`skill: "zinsser-framing"`, then `slice-flow-oracle` fidelity judge), producing
 `01-frame.md` (with `## Acceptance criteria`, `## Out of scope`,
 `## Open questions`) and `frame/judgement.md` starting `VERDICT: PASS`.
 If the compile is bad (hedge words / missing sections), a recompile is issued
@@ -114,8 +125,8 @@ feedback, converge again, then approve.
   first line, has `## Winner` / `## Scores` (markdown table) /
   `## Why the losers lost` / `## Risks carried forward`, and a mermaid block.
 - The directive JSON shows one chain with a `parallel` group of 3 (`failFast:
-  true`, `outputMode: "file-only"` per step) followed by an `oracle` judge
-  step, and a top-level `expects` listing all three hypothesis files plus the
+  true`, `outputMode: "file-only"` per step) followed by a `slice-flow-oracle`
+  judge step, and a top-level `expects` listing all three hypothesis files plus the
   architecture doc.
 - `state.json` shows `archWinner` set after approval.
 
@@ -190,7 +201,7 @@ argument`). Then in pi: `ask slice_flow for next` (or just let the agent call
 
 **Check:**
 
-- A loop directive is issued: chain = one `worker` fix step for `tests`
+- A loop directive is issued: chain = one `slice-flow-builder` fix step for `tests`
   followed by a `parallel` group re-running ONLY the `tests` verifier (not the
   other four).
 - `state.json` shows `"phase": "loop"`, `loopIteration: 1`.
@@ -239,3 +250,18 @@ re-run, and confirm the gate is skipped (UI question defaults to "none").
 In an interactive session with an active workflow, type `/feature something
 else`. **Check:** `slice_flow` errors with "already active" and points to
 `/feature-resume` / abort / deleting `feature-work/`.
+
+## 12. Preflight: missing agent guard
+
+```bash
+cd /tmp/slice-flow-toy && rm -rf feature-work
+rm .pi/agents/slice-flow-scout.md       # remove one required agent
+```
+
+In pi: `/feature add a --quiet flag`.
+
+**Check:** the workflow aborts before any `subagent` call is issued — no
+directive JSON appears under `feature-work/logs/` — and the error message names
+the missing agent (`slice-flow-scout`). Restore the agent (re-run `pi install`,
+or copy it back from `slice-flow/agents/`) and confirm `/feature` then proceeds
+normally.
