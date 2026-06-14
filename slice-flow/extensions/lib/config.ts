@@ -24,6 +24,26 @@ export interface SliceFlowModels {
 	verify: string | null;
 }
 
+/** Which subagent runs each phase. Same keys as SliceFlowModels so a phase's
+ * agent and model are tuned side by side. Values are agent names resolved by
+ * the pi-subagents runtime (builtin, user-scope, or project-scope .pi/agents). */
+export interface SliceFlowAgents {
+	intake: string;
+	research: string;
+	attack: string;
+	compile: string;
+	frameJudge: string;
+	hypothesis: string;
+	architectJudge: string;
+	prototype: string;
+	prototypeJudge: string;
+	plan: string;
+	build: string;
+	review: string;
+	fixup: string;
+	verify: string;
+}
+
 export interface SliceFlowConfig {
 	/** Container dir (under cwd) that holds one slug-named folder per task. */
 	workDir: string;
@@ -38,6 +58,7 @@ export interface SliceFlowConfig {
 	autoCommit: boolean;
 	autoApprove: boolean;
 	gitignoreWorkDir: boolean;
+	agents: SliceFlowAgents;
 	models: SliceFlowModels;
 }
 
@@ -56,6 +77,25 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	autoCommit: true,
 	autoApprove: false,
 	gitignoreWorkDir: true,
+	// Defaults name slice-flow's own dedicated agents, bundled in
+	// slice-flow/agents/ and installed into .pi/agents/. There is no
+	// generic-builtin fallback: every phase resolves to a slice-flow-<role> agent.
+	agents: {
+		intake: "slice-flow-scout",
+		research: "slice-flow-researcher",
+		attack: "slice-flow-oracle",
+		compile: "slice-flow-scout",
+		frameJudge: "slice-flow-oracle",
+		hypothesis: "slice-flow-scout",
+		architectJudge: "slice-flow-oracle",
+		prototype: "slice-flow-builder",
+		prototypeJudge: "slice-flow-oracle",
+		plan: "slice-flow-planner",
+		build: "slice-flow-builder",
+		review: "slice-flow-reviewer",
+		fixup: "slice-flow-builder",
+		verify: "slice-flow-reviewer",
+	},
 	models: {
 		intake: "anthropic/claude-haiku-4-5",
 		research: "anthropic/claude-haiku-4-5",
@@ -82,6 +122,7 @@ export function loadConfig(cwd: string): SliceFlowConfig {
 		return {
 			...DEFAULT_CONFIG,
 			...user,
+			agents: { ...DEFAULT_CONFIG.agents, ...(user.agents ?? {}) },
 			models: { ...DEFAULT_CONFIG.models, ...(user.models ?? {}) },
 		};
 	} catch (err) {
