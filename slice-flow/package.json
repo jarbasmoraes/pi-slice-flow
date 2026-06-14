@@ -21,6 +21,9 @@
     ],
     "prompts": [
       "./prompts"
+    ],
+    "agents": [
+      "./agents"
     ]
   },
   "peerDependencies": {
