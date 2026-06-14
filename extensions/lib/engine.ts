@@ -506,7 +506,23 @@ const HANDLERS: Record<string, (env: Env) => Promise<string>> = {
 
 // --- Public entry points -----------------------------------------------------------
 
-export function startWorkflow(p: Paths, cfg: SliceFlowConfig, feature: string, slug: string, baselineCommit: string | null): string {
+/** Hard-fail before any phase if a required agent file is absent from the
+ * project's discovered agent directory (.pi/agents/), naming each missing one. */
+export function preflightAgents(cwd: string, cfg: SliceFlowConfig): void {
+	const agentsDir = join(cwd, ".pi", "agents");
+	const required = [...new Set(Object.values(cfg.agents))];
+	const missing = required.filter((name) => !existsSync(join(agentsDir, `${name}.md`)));
+	if (missing.length > 0) {
+		throw new Error(
+			`slice-flow preflight failed: required agent(s) not found in ${agentsDir}: ` +
+				`${missing.join(", ")}. They are bundled in slice-flow/agents/ and must be ` +
+				`installed into .pi/agents/ — re-run the package install/sync.`,
+		);
+	}
+}
+
+export function startWorkflow(p: Paths, cfg: SliceFlowConfig, feature: string, slug: string, baselineCommit: string | null, cwd: string): string {
+	preflightAgents(cwd, cfg);
 	ensureWorkTree(p);
 	const state = createState(feature, slug, baselineCommit);
 	logEvent(state, `started: ${state.feature}`);

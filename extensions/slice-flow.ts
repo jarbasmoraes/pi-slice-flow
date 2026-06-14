@@ -119,7 +119,7 @@ export default function (pi: ExtensionAPI) {
 				if (cfg.gitignoreWorkDir && baseline !== null) ensureGitignored(ctx.cwd, cfg.workDir);
 				const slug = allocateSlug(ctx.cwd, cfg.workDir, params.description.trim());
 				const p = workPaths(ctx.cwd, cfg.workDir, slug);
-				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline);
+				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd);
 				return { content: [{ type: "text", text }], details: { phase: "frame", slug } };
 			}
 
