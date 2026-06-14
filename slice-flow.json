@@ -1,0 +1,34 @@
+{
+  "agents": {
+    "intake": "slice-flow-scout",
+    "research": "slice-flow-researcher",
+    "attack": "slice-flow-oracle",
+    "compile": "slice-flow-scout",
+    "frameJudge": "slice-flow-oracle",
+    "hypothesis": "slice-flow-scout",
+    "architectJudge": "slice-flow-oracle",
+    "prototype": "slice-flow-builder",
+    "prototypeJudge": "slice-flow-oracle",
+    "plan": "slice-flow-planner",
+    "build": "slice-flow-builder",
+    "review": "slice-flow-reviewer",
+    "fixup": "slice-flow-builder",
+    "verify": "slice-flow-reviewer"
+  },
+  "models": {
+    "intake": null,
+    "research": null,
+    "attack": null,
+    "compile": null,
+    "frameJudge": null,
+    "hypothesis": null,
+    "architectJudge": null,
+    "prototype": null,
+    "prototypeJudge": null,
+    "plan": null,
+    "build": null,
+    "review": null,
+    "fixup": null,
+    "verify": null
+  }
+}
