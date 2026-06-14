@@ -66,7 +66,11 @@ test("model lines are preserved per role", () => {
 
 test("apart from the name line, each bundle is byte-identical to its source", () => {
   for (const role of roles) {
-    const source = readFileSync(join(discoveredDir, `slice-${role}.md`), "utf8");
+    // Slice 003 deletes the original .pi/agents/slice-<role>.md sources; once gone,
+    // slice-flow/agents/ is the source of truth and this fidelity check is moot.
+    const sourcePath = join(discoveredDir, `slice-${role}.md`);
+    if (!existsSync(sourcePath)) continue;
+    const source = readFileSync(sourcePath, "utf8");
     const bundle = readFileSync(join(bundleDir, `slice-flow-${role}.md`), "utf8");
     const strip = (t) => t.split("\n").filter((l) => !l.startsWith("name:")).join("\n");
     assert.equal(strip(bundle), strip(source), `bundle slice-flow-${role}.md differs from source beyond the name line`);
