@@ -17,10 +17,9 @@ no API keys) so the research fan-out works out of the box.
 ## Requirements
 
 - `pi-subagents` installed (`pi install npm:pi-subagents`) — slice-flow issues
-  `subagent` tool calls; it never spawns processes itself. Its builtin
-  `researcher` agent picks up this package's `web_search`/`fetch_content`
-  tools automatically (same names pi-web-access uses, so swapping later is
-  config-free).
+  `subagent` tool calls; it never spawns processes itself. The bundled
+  `slice-flow-researcher` agent carries the `web_search`/`fetch_content`
+  allowlist (same names pi-web-access uses, so swapping later is config-free).
 - Optional: your own `ui-prototyping` and `design-guidelines` skills. Phase 3
   references them by name; if absent, pi-subagents warns and proceeds without
   them (slice-flow ships only the five skills below).
@@ -35,6 +34,12 @@ pi install -l /path/to/slice-flow     # or project scope (.pi/settings.json)
 Skills must be discoverable by pi-subagents' own skill resolution, which reads
 installed packages and settings — so install the package rather than loading it
 with a one-off `pi -e`.
+
+The six `slice-flow-*` agents are installed into `.pi/agents/` (declared via
+`package.json` `pi.agents`). A preflight check runs before the first phase and
+fails the workflow, naming any missing agent, so a broken install stops the run
+up front. Upgrade note: old `.pi/agents/slice-<role>.md` files from prior
+versions are superseded by the `slice-flow-<role>.md` files and can be removed.
 
 ## Usage
 
@@ -219,9 +224,11 @@ Notes:
 - **Fan-outs use parallel mode**: hypothesis trio and prototype five-way as
   `{ parallel: [...] }` chain groups (judge step follows in the same chain);
   the five verifiers as top-level `tasks: [...]`.
-- **Builtin agents are reused** (`scout`, `planner`, `worker`, `reviewer`,
-  `oracle`) with per-call `skill`, `model`, `reads`, `output` overrides — no
-  custom agent definitions to maintain.
+- **slice-flow ships six dedicated agents** (`slice-flow-scout`,
+  `slice-flow-researcher`, `slice-flow-builder`, `slice-flow-oracle`,
+  `slice-flow-planner`, `slice-flow-reviewer`) bundled in `slice-flow/agents/`
+  and installed into `.pi/agents/`, driven with per-call `skill`, `reads`,
+  `output` (and `model`) overrides.
 - `context: "fresh"` on every call defeats the `fork` default of
   planner/worker/oracle; `clarify: false` keeps pi-subagents' own TUI out of
   the way (slice-flow gates instead).
@@ -240,9 +247,10 @@ Notes:
 
 Free, no API keys, no bash: `web_search` (DuckDuckGo HTML endpoint, multi-query)
 and `fetch_content` (Jina Reader with a direct-fetch fallback, truncated). Tool
-names match pi-subagents' builtin `researcher` agent allowlist, so the frame
-research fan-out works with zero custom agent definitions — and only agents
-whose allowlist names these tools can use them (builders and verifiers cannot).
+names match the dedicated `slice-flow-researcher` agent's `tools` allowlist
+(`web_search`/`fetch_content`), so the frame research fan-out works out of the
+box — and only agents whose allowlist names these tools can use them (builders
+and verifiers cannot).
 Failures are loud by design: a rate-limited search or blocked page returns an
 explicit error so researchers record "source unavailable" instead of
 improvising from memory.
