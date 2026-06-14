@@ -35,11 +35,16 @@ Skills must be discoverable by pi-subagents' own skill resolution, which reads
 installed packages and settings — so install the package rather than loading it
 with a one-off `pi -e`.
 
-The six `slice-flow-*` agents are installed into `.pi/agents/` (declared via
-`package.json` `pi.agents`). A preflight check runs before the first phase and
-fails the workflow, naming any missing agent, so a broken install stops the run
-up front. Upgrade note: old `.pi/agents/slice-<role>.md` files from prior
-versions are superseded by the `slice-flow-<role>.md` files and can be removed.
+The six `slice-flow-*` agents ship inside the package under `agents/` (also
+declared in `package.json` `pi.agents`). pi's package manager has no "agents"
+resource type, so `pi install` does **not** auto-copy them; instead the first
+`/feature` provisions them into the project's discovered directory `.pi/agents/`,
+copying any that are missing from the bundle (existing copies are left intact, so
+local customizations survive). A preflight check then runs before the first phase
+and — if the bundle itself is unavailable, i.e. a broken install — fails the
+workflow, naming every required agent, so the run stops up front. Upgrade note:
+old `.pi/agents/slice-<role>.md` files from prior versions are superseded by the
+`slice-flow-<role>.md` files and can be removed.
 
 ## Usage
 
@@ -227,8 +232,8 @@ Notes:
 - **slice-flow ships six dedicated agents** (`slice-flow-scout`,
   `slice-flow-researcher`, `slice-flow-builder`, `slice-flow-oracle`,
   `slice-flow-planner`, `slice-flow-reviewer`) bundled in `slice-flow/agents/`
-  and installed into `.pi/agents/`, driven with per-call `skill`, `reads`,
-  `output` (and `model`) overrides.
+  and provisioned into `.pi/agents/` on workflow start, driven with per-call
+  `skill`, `reads`, `output` (and `model`) overrides.
 - `context: "fresh"` on every call defeats the `fork` default of
   planner/worker/oracle; `clarify: false` keeps pi-subagents' own TUI out of
   the way (slice-flow gates instead).
