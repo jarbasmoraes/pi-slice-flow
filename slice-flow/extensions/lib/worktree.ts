@@ -5,7 +5,7 @@
  * command and reports its exit code plus captured output.
  */
 
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 /** Container directory (relative to the repo root) for slice-flow worktrees. */
 export const WORKTREES_DIR = ".pi/worktrees";
@@ -38,4 +38,45 @@ export async function createWorktree(exec: Exec, cwd: string, slug: string): Pro
 		throw new Error(`git worktree add failed (code ${res.code}): ${res.stderr.trim() || res.stdout.trim()}`);
 	}
 	return { cwd: path, branch, path, created_at: new Date().toISOString() };
+}
+
+/**
+ * The main repo root for a worktree at `<root>/.pi/worktrees/<slug>`. Three
+ * levels up from the worktree directory (slug -> worktrees -> .pi -> root).
+ */
+export function repoRootOf(wt: WorktreeInfo): string {
+	return resolve(wt.path, "..", "..", "..");
+}
+
+/**
+ * Inspect a worktree before disposing of it. `isClean` is true when
+ * `git status --porcelain` reports no changes; `isUnmerged` is true when the
+ * worktree branch has commits ahead of `baselineCommit` (the commit it was cut
+ * from). A null baseline means there is nothing to compare against, so the
+ * branch is treated as not-unmerged.
+ */
+export async function validateWorktree(
+	exec: Exec,
+	path: string,
+	baselineCommit: string | null,
+): Promise<{ isClean: boolean; isUnmerged: boolean }> {
+	const status = await exec("git", ["status", "--porcelain"], { cwd: path });
+	const isClean = status.code === 0 && status.stdout.trim() === "";
+	let isUnmerged = false;
+	if (baselineCommit !== null) {
+		const log = await exec("git", ["log", "--oneline", `${baselineCommit}..HEAD`], { cwd: path });
+		isUnmerged = log.stdout.trim() !== "";
+	}
+	return { isClean, isUnmerged };
+}
+
+/**
+ * Remove a worktree via `git worktree remove`, run from the repo root. Throws
+ * when git exits non-zero so the caller can surface (not silently swallow) it.
+ */
+export async function removeWorktree(exec: Exec, repoCwd: string, path: string): Promise<void> {
+	const res = await exec("git", ["worktree", "remove", path], { cwd: repoCwd });
+	if (res.code !== 0) {
+		throw new Error(`git worktree remove failed (code ${res.code}): ${res.stderr.trim() || res.stdout.trim()}`);
+	}
 }
