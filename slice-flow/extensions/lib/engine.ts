@@ -25,6 +25,8 @@ import {
 	researchDirective,
 	verifyDirective,
 } from "./directives.ts";
+import { codegraphPreamble } from "./codegraph.ts";
+import type { CodegraphState } from "./codegraph.ts";
 import { PAUSE_MSG, askUiShape, gate } from "./gates.ts";
 import type { GateContext } from "./gates.ts";
 import {
@@ -621,18 +623,22 @@ export function startWorkflow(
 	slug: string,
 	baselineCommit: string | null,
 	cwd: string,
+	codegraphState: CodegraphState = "silent",
 	isolation?: { worktree?: WorktreeInfo },
 ): string {
 	syncBundledAgents(cwd);
 	preflightAgents(cwd, cfg);
 	ensureWorkTree(p);
 	const state = createState(feature, slug, baselineCommit, isolation);
+	state.codegraphReady = codegraphState === "ready";
 	logEvent(state, `started: ${state.feature}`);
+	const cgLine = codegraphPreamble(codegraphState);
 	return issue(
 		p,
 		state,
 		intakeDirective(p, state, cfg),
-		`slice-flow started. Task slug: ${slug} (folder ${p.root}). Pass "slug":"${slug}" on every follow-up slice_flow call. Baseline commit: ${baselineCommit ?? "(not a git repo)"}.`,
+		`slice-flow started. Task slug: ${slug} (folder ${p.root}). Pass "slug":"${slug}" on every follow-up slice_flow call. Baseline commit: ${baselineCommit ?? "(not a git repo)"}.` +
+			(cgLine ? `\n${cgLine}` : ""),
 	);
 }
 

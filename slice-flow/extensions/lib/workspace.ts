@@ -50,6 +50,7 @@ export interface State {
 	tokensSpent: number; // best-effort estimate across all subagent runs
 	loopStartTokens: number;
 	seq: number;
+	codegraphReady: boolean; // graph.db present at start; gates later codegraph skill injection
 	log: Array<{ ts: string; event: string }>;
 	isolation?: { worktree?: WorktreeInfo; disposition?: string };
 }
@@ -160,6 +161,7 @@ export function createState(
 		tokensSpent: 0,
 		loopStartTokens: 0,
 		seq: 0,
+		codegraphReady: false,
 		log: [],
 		isolation,
 	};
@@ -175,6 +177,7 @@ export function loadState(p: Paths): State | null {
 	s.archRetries = s.archRetries ?? 0;
 	s.archApproved = s.archApproved ?? false;
 	s.archWinner = s.archWinner ?? null;
+	s.codegraphReady = s.codegraphReady ?? false;
 	return s;
 }
 
