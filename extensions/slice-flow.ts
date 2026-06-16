@@ -27,6 +27,7 @@ import { Type } from "typebox";
 import { loadConfig } from "./lib/config.ts";
 import type { SliceFlowConfig } from "./lib/config.ts";
 import { converge, nextStep, startAttack, startResearch, startWorkflow, stopped } from "./lib/engine.ts";
+import { detectCodegraph } from "./lib/codegraph.ts";
 import {
 	allocateSlug,
 	ensureGitignored,
@@ -118,6 +119,7 @@ export default function (pi: ExtensionAPI) {
 				if (!params.description?.trim()) throw new Error("action 'start' requires a non-empty description.");
 				const cfg = loadConfig(ctx.cwd);
 				const baseline = await gitBaseline(pi);
+				const codegraphState = await detectCodegraph(ctx.cwd, (c, a, o) => pi.exec(c, a, o));
 				if (cfg.gitignoreWorkDir && baseline !== null) ensureGitignored(ctx.cwd, cfg.workDir);
 				const slug = allocateSlug(ctx.cwd, cfg.workDir, params.description.trim());
 				const p = workPaths(ctx.cwd, cfg.workDir, slug);
@@ -136,7 +138,7 @@ export default function (pi: ExtensionAPI) {
 						}
 					}
 				}
-				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, isolation);
+				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, codegraphState, isolation);
 				return { content: [{ type: "text", text }], details: { phase: "frame", slug } };
 			}
 
