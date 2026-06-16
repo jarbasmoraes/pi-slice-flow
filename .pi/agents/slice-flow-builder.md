@@ -1,7 +1,6 @@
 ---
 name: slice-flow-builder
 description: slice-flow implementation agent — builds one slice, applies fix-ups, and resolves loop failures with narrow, TDD-first, contract-bound edits.
-model: anthropic/claude-sonnet-4-6
 thinking: high
 tools: read, grep, find, ls, bash, edit, write
 systemPromptMode: replace

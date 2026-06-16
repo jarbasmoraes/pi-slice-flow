@@ -2,6 +2,7 @@
 name: slice-flow-scout
 description: slice-flow recon agent — intake checks, frame compilation, and architecture hypotheses. Fast, evidence-first, compresses findings into the requested artifact.
 model: anthropic/claude-haiku-4-5
+fallbackModels: openai-codex/gpt-5.4-mini, openai-codex/gpt-5.3-codex-spark, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
 thinking: medium
 tools: read, grep, find, ls, bash, write
 systemPromptMode: replace

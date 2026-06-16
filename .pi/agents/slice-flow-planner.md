@@ -1,7 +1,6 @@
 ---
 name: slice-flow-planner
 description: slice-flow planner — turns the approved frame and architecture into an ordered plan of small, contract-bound slices.
-model: anthropic/claude-opus-4-8
 thinking: high
 tools: read, grep, find, ls, write
 systemPromptMode: replace
