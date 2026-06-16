@@ -162,7 +162,7 @@ export default function (pi: ExtensionAPI) {
 				case "next": {
 					if (!state || !p) throw new Error(noTaskHint);
 					if (params.note) logEvent(state, `note: ${params.note}`);
-					const text = await nextStep(ctx, p, cfg, state);
+					const text = await nextStep(ctx, p, cfg, state, (c, a, o) => pi.exec(c, a, o));
 					return { content: [{ type: "text", text }], details: { phase: state.phase, slug } };
 				}
 

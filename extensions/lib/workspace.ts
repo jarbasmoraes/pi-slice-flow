@@ -51,7 +51,7 @@ export interface State {
 	loopStartTokens: number;
 	seq: number;
 	log: Array<{ ts: string; event: string }>;
-	isolation?: { worktree?: WorktreeInfo };
+	isolation?: { worktree?: WorktreeInfo; disposition?: string };
 }
 
 export interface Paths {

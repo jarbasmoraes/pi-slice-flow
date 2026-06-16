@@ -46,7 +46,8 @@ import {
 	winnerOf,
 } from "./workspace.ts";
 import type { Directive, Paths, State } from "./workspace.ts";
-import type { WorktreeInfo } from "./worktree.ts";
+import { repoRootOf, removeWorktree, validateWorktree } from "./worktree.ts";
+import type { Exec, WorktreeInfo } from "./worktree.ts";
 
 interface Env {
 	ctx: GateContext;
@@ -54,6 +55,59 @@ interface Env {
 	cfg: SliceFlowConfig;
 	state: State;
 	pending: Directive;
+	exec?: Exec;
+}
+
+/** Branch disposition choices offered on completion; the workflow records the
+ * user's selection but never performs the merge/PR/push itself. */
+const DISPOSITION_OPTIONS = [
+	"Manual merge — leave the branch to inspect later",
+	"Create a PR",
+	"Merge to a local branch",
+] as const;
+
+/**
+ * On a clean verification pass, dispose of the worktree: validate it, prompt to
+ * remove it (refusing a default-remove when work is dirty or unmerged so nothing
+ * is silently discarded), and record the user's branch disposition. Never runs
+ * any merge/PR/push command — only the choice is persisted. No-op when no
+ * worktree is recorded.
+ */
+export async function finalizeWorktree(env: Env, exec: Exec): Promise<void> {
+	const { ctx, p, state } = env;
+	const wt = state.isolation?.worktree;
+	if (!wt) return;
+
+	const { isClean, isUnmerged } = await validateWorktree(exec, wt.path, state.baselineCommit);
+	const unsafe = !isClean || isUnmerged;
+
+	let remove = false;
+	if (ctx.hasUI) {
+		remove = unsafe
+			? await ctx.ui.confirm(
+					"Remove the worktree? (NOT recommended)",
+					`The worktree at ${wt.path} (branch ${wt.branch}) is dirty or unmerged — removing it discards uncommitted/unmerged work. Confirm explicitly only if you are sure.`,
+				)
+			: await ctx.ui.confirm(
+					"Remove the worktree?",
+					`The worktree at ${wt.path} (branch ${wt.branch}) is clean and merged. Remove it now?`,
+				);
+	}
+
+	const choice = ctx.hasUI ? await ctx.ui.select("How should the feature branch be handled?", [...DISPOSITION_OPTIONS]) : undefined;
+	const disposition = choice ?? "manual";
+	state.isolation = { worktree: wt, disposition };
+
+	if (remove) {
+		try {
+			await removeWorktree(exec, repoRootOf(wt), wt.path);
+		} catch (err) {
+			if (ctx.hasUI) {
+				ctx.ui.notify(`Could not remove worktree at ${wt.path}: ${err instanceof Error ? err.message : String(err)}`, "warning");
+			}
+		}
+	}
+	saveState(p, state);
 }
 
 // --- Shared step plumbing ------------------------------------------------------
@@ -87,7 +141,11 @@ export function stopped(p: Paths, state: State, reason: string): string {
 	state.pending = null;
 	logEvent(state, `stopped: ${reason}`);
 	saveState(p, state);
-	return `Workflow STOPPED: ${reason}. State preserved at ${p.state}. Report (if any) at ${p.report}. Tell the user and end your turn.`;
+	const wt = state.isolation?.worktree;
+	const worktreeNote = wt
+		? ` The worktree at ${wt.path} (branch ${wt.branch}) was left intact — inspect or remove it manually; nothing was auto-removed.`
+		: "";
+	return `Workflow STOPPED: ${reason}. State preserved at ${p.state}. Report (if any) at ${p.report}.${worktreeNote} Tell the user and end your turn.`;
 }
 
 /** Re-issue the pending directive because its expected artifacts are missing. */
@@ -455,6 +513,10 @@ async function onVerified(env: Env): Promise<string> {
 		state.pending = null;
 		logEvent(state, "clean verification pass");
 		saveState(p, state);
+		// Dispose of the worktree (validate, prompt removal, record disposition)
+		// before telling the user the workflow is complete. Guarded so the
+		// many existing no-exec callers and worktree-less tasks are unaffected.
+		if (env.exec) await finalizeWorktree(env, env.exec);
 		return [
 			"## Workflow COMPLETE — clean verification pass on all 5 dimensions.",
 			"",
@@ -574,7 +636,7 @@ export function startWorkflow(
 	);
 }
 
-export async function nextStep(ctx: GateContext, p: Paths, cfg: SliceFlowConfig, state: State): Promise<string> {
+export async function nextStep(ctx: GateContext, p: Paths, cfg: SliceFlowConfig, state: State, exec?: Exec): Promise<string> {
 	if (state.phase === "done") return `Workflow already complete. Final docs are under ${p.root}/.`;
 	if (state.phase === "stopped") return `Workflow is stopped. Start fresh with /feature after clearing ${p.root}, or inspect ${p.report}.`;
 	const pending = state.pending;
@@ -584,7 +646,7 @@ export async function nextStep(ctx: GateContext, p: Paths, cfg: SliceFlowConfig,
 	if (!pending) return stopped(p, state, "internal error: no pending directive");
 	const handler = HANDLERS[pending.kind];
 	if (!handler) return stopped(p, state, `unknown pending directive kind "${pending.kind}"`);
-	return handler({ ctx, p, cfg, state, pending });
+	return handler({ ctx, p, cfg, state, pending, exec });
 }
 
 function writeBreachReport(p: Paths, state: State, cfg: SliceFlowConfig, reason: string): void {
