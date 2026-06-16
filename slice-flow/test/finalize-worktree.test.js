@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { WORKTREES_DIR, createWorktree, validateWorktree, removeWorktree, repoRootOf } from "../extensions/lib/worktree.ts";
-import { finalizeWorktree } from "../extensions/lib/engine.ts";
+import { finalizeWorktree, stopped } from "../extensions/lib/engine.ts";
 
 /** An `Exec`-shaped wrapper around node:child_process execFile. */
 function realExec(cmd, args, opts = {}) {
@@ -183,6 +183,29 @@ test("finalizeWorktree removes a clean worktree when confirmed", async () => {
   assert.ok(removal, "git worktree remove issued");
   assert.equal(removal.opts.cwd, "/repo", "removal run from the repo root");
   assertNoMergeOrPush(records);
+});
+
+// --- stopped(): abort leaves the worktree intact with a naming note (risk #9) -
+
+test("stopped names the worktree path and branch and notes it was left intact", () => {
+  const wt = { path: "/repo/.pi/worktrees/feat", cwd: "/repo/.pi/worktrees/feat", branch: "slice-flow/feat", created_at: "" };
+  const stateFile = join(mkdtempSync(join(tmpdir(), "slice-flow-stopped-")), "state.json");
+  const p = { root: "/repo", state: stateFile, logs: "/repo/logs", report: "/repo/report.md" };
+  const state = { phase: "verify", pending: null, log: [], isolation: { worktree: wt } };
+  const msg = stopped(p, state, "user aborted");
+  assert.match(msg, /\/repo\/\.pi\/worktrees\/feat/, "names the worktree path");
+  assert.match(msg, /slice-flow\/feat/, "names the branch");
+  assert.match(msg, /left intact/i, "notes the worktree was left intact");
+  // The worktree directory is never touched on abort — no removal happened here.
+  assert.equal(state.phase, "stopped");
+});
+
+test("stopped omits the worktree note when no worktree is recorded", () => {
+  const stateFile = join(mkdtempSync(join(tmpdir(), "slice-flow-stopped-")), "state.json");
+  const p = { root: "/repo", state: stateFile, logs: "/repo/logs", report: "/repo/report.md" };
+  const state = { phase: "verify", pending: null, log: [], isolation: undefined };
+  const msg = stopped(p, state, "user aborted");
+  assert.doesNotMatch(msg, /left intact/i, "no worktree note without a worktree");
 });
 
 test("finalizeWorktree defaults disposition to manual with no UI and never removes", async () => {
