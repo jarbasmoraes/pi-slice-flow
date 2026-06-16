@@ -48,7 +48,7 @@ import {
 	winnerOf,
 } from "./workspace.ts";
 import type { Directive, Paths, State } from "./workspace.ts";
-import { repoRootOf, removeWorktree, validateWorktree } from "./worktree.ts";
+import { createWorktree, repoRootOf, removeWorktree, validateWorktree } from "./worktree.ts";
 import type { Exec, WorktreeInfo } from "./worktree.ts";
 
 interface Env {
@@ -58,6 +58,38 @@ interface Env {
 	state: State;
 	pending: Directive;
 	exec?: Exec;
+}
+
+/**
+ * Startup gateway: decide whether this run is isolated in a git worktree. Only
+ * prompts when the project is a git repo (baseline non-null) AND a UI is present
+ * (AC11: no prompt on a non-git project; none in unattended runs). On
+ * confirmation it creates the worktree and returns it as isolation (AC1/AC2); a
+ * declined prompt returns undefined so behavior is identical to pre-feature
+ * (AC3). A creation failure is surfaced and returns undefined — a half-made
+ * worktree is never recorded (risk #8).
+ */
+export async function setupWorktree(
+	ctx: GateContext,
+	exec: Exec,
+	cfg: SliceFlowConfig,
+	cwd: string,
+	slug: string,
+	baselineCommit: string | null,
+): Promise<{ worktree: WorktreeInfo } | undefined> {
+	if (baselineCommit === null || !ctx.hasUI) return undefined;
+	const useWorktree = await ctx.ui.confirm(
+		"Run in a worktree?",
+		`Creates an isolated git worktree under ${cfg.workDir}/../worktrees/${slug}/ on branch slice-flow/${slug}, leaving your current checkout untouched.`,
+	);
+	if (!useWorktree) return undefined;
+	try {
+		const worktree = await createWorktree(exec, cwd, slug);
+		return { worktree };
+	} catch (err) {
+		ctx.ui.notify(`Could not create worktree: ${err instanceof Error ? err.message : String(err)}. Continuing in the current checkout.`, "warning");
+		return undefined;
+	}
 }
 
 /** Branch disposition choices offered on completion; the workflow records the
