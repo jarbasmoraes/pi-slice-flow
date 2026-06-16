@@ -42,6 +42,8 @@ import {
 	workPaths,
 } from "./lib/workspace.ts";
 import type { Paths, State } from "./lib/workspace.ts";
+import { createWorktree } from "./lib/worktree.ts";
+import type { WorktreeInfo } from "./lib/worktree.ts";
 
 interface Workspace {
 	cfg: SliceFlowConfig;
@@ -119,7 +121,22 @@ export default function (pi: ExtensionAPI) {
 				if (cfg.gitignoreWorkDir && baseline !== null) ensureGitignored(ctx.cwd, cfg.workDir);
 				const slug = allocateSlug(ctx.cwd, cfg.workDir, params.description.trim());
 				const p = workPaths(ctx.cwd, cfg.workDir, slug);
-				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd);
+				let isolation: { worktree?: WorktreeInfo } | undefined;
+				if (baseline !== null && ctx.hasUI) {
+					const useWorktree = await ctx.ui.confirm(
+						"Run in a worktree?",
+						`Creates an isolated git worktree under ${cfg.workDir}/../worktrees/${slug}/ on branch slice-flow/${slug}, leaving your current checkout untouched.`,
+					);
+					if (useWorktree) {
+						try {
+							const worktree = await createWorktree((c, a, o) => pi.exec(c, a, o), ctx.cwd, slug);
+							isolation = { worktree };
+						} catch (err) {
+							ctx.ui.notify(`Could not create worktree: ${err instanceof Error ? err.message : String(err)}. Continuing in the current checkout.`, "warning");
+						}
+					}
+				}
+				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, isolation);
 				return { content: [{ type: "text", text }], details: { phase: "frame", slug } };
 			}
 

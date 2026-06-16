@@ -8,6 +8,8 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { WORKTREES_DIR } from "./worktree.ts";
+import type { WorktreeInfo } from "./worktree.ts";
 
 export const VERIFY_DIMENSIONS = ["code-quality", "simplicity", "security", "evals", "tests"] as const;
 export type VerifyDimension = (typeof VERIFY_DIMENSIONS)[number];
@@ -26,7 +28,7 @@ export interface Directive {
 }
 
 export interface State {
-	version: 1;
+	version: 1 | 2;
 	feature: string;
 	slug: string; // task folder name under the container dir (.pi/task/<slug>/)
 	createdAt: string;
@@ -49,6 +51,7 @@ export interface State {
 	loopStartTokens: number;
 	seq: number;
 	log: Array<{ ts: string; event: string }>;
+	isolation?: { worktree?: WorktreeInfo };
 }
 
 export interface Paths {
@@ -127,10 +130,15 @@ export function ensureWorkTree(p: Paths): void {
 	}
 }
 
-export function createState(feature: string, slug: string, baselineCommit: string | null): State {
+export function createState(
+	feature: string,
+	slug: string,
+	baselineCommit: string | null,
+	isolation?: { worktree?: WorktreeInfo },
+): State {
 	const now = new Date().toISOString();
 	return {
-		version: 1,
+		version: 2,
 		feature,
 		slug,
 		createdAt: now,
@@ -153,6 +161,7 @@ export function createState(feature: string, slug: string, baselineCommit: strin
 		loopStartTokens: 0,
 		seq: 0,
 		log: [],
+		isolation,
 	};
 }
 
@@ -476,10 +485,13 @@ export function statusSummary(p: Paths, state: State): string {
 export function ensureGitignored(cwd: string, workDir: string): void {
 	try {
 		const gi = join(cwd, ".gitignore");
-		const entry = `${workDir.replace(/\/$/, "")}/`;
-		const current = existsSync(gi) ? readFileSync(gi, "utf8") : "";
-		if (!current.split("\n").some((l) => l.trim() === entry || l.trim() === workDir)) {
-			appendFileSync(gi, `${current.endsWith("\n") || current === "" ? "" : "\n"}${entry}\n`, "utf8");
+		const entries = [`${workDir.replace(/\/$/, "")}/`, `${WORKTREES_DIR}/`];
+		for (const entry of entries) {
+			const current = existsSync(gi) ? readFileSync(gi, "utf8") : "";
+			const bare = entry.replace(/\/$/, "");
+			if (!current.split("\n").some((l) => l.trim() === entry || l.trim() === bare)) {
+				appendFileSync(gi, `${current.endsWith("\n") || current === "" ? "" : "\n"}${entry}\n`, "utf8");
+			}
 		}
 	} catch {
 		/* non-fatal */

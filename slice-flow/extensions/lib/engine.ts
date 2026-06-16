@@ -45,6 +45,7 @@ import {
 	winnerOf,
 } from "./workspace.ts";
 import type { Directive, Paths, State } from "./workspace.ts";
+import type { WorktreeInfo } from "./worktree.ts";
 
 interface Env {
 	ctx: GateContext;
@@ -549,11 +550,19 @@ export function preflightAgents(cwd: string, cfg: SliceFlowConfig): void {
 	}
 }
 
-export function startWorkflow(p: Paths, cfg: SliceFlowConfig, feature: string, slug: string, baselineCommit: string | null, cwd: string): string {
+export function startWorkflow(
+	p: Paths,
+	cfg: SliceFlowConfig,
+	feature: string,
+	slug: string,
+	baselineCommit: string | null,
+	cwd: string,
+	isolation?: { worktree?: WorktreeInfo },
+): string {
 	syncBundledAgents(cwd);
 	preflightAgents(cwd, cfg);
 	ensureWorkTree(p);
-	const state = createState(feature, slug, baselineCommit);
+	const state = createState(feature, slug, baselineCommit, isolation);
 	logEvent(state, `started: ${state.feature}`);
 	return issue(
 		p,
