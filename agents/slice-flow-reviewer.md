@@ -2,6 +2,7 @@
 name: slice-flow-reviewer
 description: slice-flow reviewer and verifier — judges a built slice against its contract (reviewer-solid) and refutes verification dimensions (verify-rubrics). Never edits source.
 model: anthropic/claude-opus-4-8
+fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3-coder-next:latest, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
 thinking: high
 tools: read, grep, find, ls, bash, write
 systemPromptMode: replace

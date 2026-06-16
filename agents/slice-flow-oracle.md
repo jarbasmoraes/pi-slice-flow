@@ -2,6 +2,7 @@
 name: slice-flow-oracle
 description: slice-flow adversary and judge — runs attacks on the framing and judges frame fidelity, architecture hypotheses, and prototypes against the inherited contract.
 model: anthropic/claude-opus-4-8
+fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
 thinking: high
 tools: read, grep, find, ls, bash, write
 systemPromptMode: replace

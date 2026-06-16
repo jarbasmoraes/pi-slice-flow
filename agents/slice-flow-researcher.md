@@ -2,6 +2,7 @@
 name: slice-flow-researcher
 description: slice-flow web researcher — answers one framing question with a focused, source-backed brief during frame exploration.
 model: anthropic/claude-haiku-4-5
+fallbackModels: openai-codex/gpt-5.4-mini, openai-codex/gpt-5.3-codex-spark, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
 thinking: medium
 tools: read, write, web_search, fetch_content, get_search_content
 systemPromptMode: replace
