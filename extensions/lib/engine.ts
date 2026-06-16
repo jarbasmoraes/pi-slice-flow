@@ -16,6 +16,7 @@ import {
 	buildDirective,
 	compileDirective,
 	fixupDirective,
+	injectIsolationCwd,
 	intakeDirective,
 	logDirective,
 	loopDirective,
@@ -59,6 +60,7 @@ interface Env {
 
 /** Persist a directive as the pending step and render it for the parent LLM. */
 export function issue(p: Paths, state: State, directive: Directive, preamble = ""): string {
+	injectIsolationCwd(directive.args, state);
 	state.pending = directive;
 	logDirective(p, directive);
 	logEvent(state, `issued: ${directive.label}`);
