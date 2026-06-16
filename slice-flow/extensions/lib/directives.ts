@@ -35,6 +35,30 @@ import {
 import { VERIFY_DIMENSIONS, hypothesisPaths, logEvent, nextSeqIn, pad3, priorMemoPaths, sliceArtifacts, slugify } from "./workspace.ts";
 import type { Directive, Paths, State, VerifyDimension } from "./workspace.ts";
 
+// --- Worktree isolation --------------------------------------------------------
+
+/**
+ * Thread the active worktree cwd into every spawned agent. When the task has an
+ * isolation worktree, walk the directive args and tag every object carrying an
+ * `agent` string with `cwd: <worktree cwd>`, so builders, reviewers, the verify
+ * fan-out, and any future directive run inside the worktree. A no-op (returns
+ * the args unchanged) when no worktree is active. Mutates `args` in place.
+ */
+export function injectIsolationCwd(args: Record<string, unknown>, state: State): Record<string, unknown> {
+	const wt = state.isolation?.worktree;
+	if (!wt) return args;
+	const walk = (node: unknown): void => {
+		if (Array.isArray(node)) return node.forEach(walk);
+		if (node && typeof node === "object") {
+			const o = node as Record<string, unknown>;
+			if (typeof o.agent === "string") o.cwd = wt.cwd;
+			for (const v of Object.values(o)) walk(v);
+		}
+	};
+	walk(args);
+	return args;
+}
+
 // --- DRY building blocks -----------------------------------------------------
 
 /** Spread helper: include `model` only when configured (null inherits the session default). */
