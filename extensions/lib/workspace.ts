@@ -38,6 +38,7 @@ export interface State {
 	frameStage: FrameStage;
 	compileRetries: number;
 	archRetries: number; // bounded re-judge rounds for the architecture document
+	planRetries: number; // bounded auto-replan rounds when the slice lint fails
 	archApproved: boolean; // gate approval persisted before the UI question (atomicity)
 	archWinner: string | null; // parsed "WINNER: hypothesis-<id>" marker
 	pending: Directive | null;
@@ -45,6 +46,7 @@ export interface State {
 	slices: string[]; // slice file basenames, in order
 	sliceIndex: number;
 	fixupRound: number; // 0 = initial build; 1..maxFixupsPerSlice = fix-up rounds
+	memoRelint: number; // bounded re-runs of the current build/fix-up on a malformed memo
 	loopIteration: number;
 	failedDimensions: VerifyDimension[];
 	tokensSpent: number; // best-effort estimate across all subagent runs
@@ -149,6 +151,7 @@ export function createState(
 		frameStage: "intake",
 		compileRetries: 0,
 		archRetries: 0,
+		planRetries: 0,
 		archApproved: false,
 		archWinner: null,
 		pending: null,
@@ -156,6 +159,7 @@ export function createState(
 		slices: [],
 		sliceIndex: 0,
 		fixupRound: 0,
+		memoRelint: 0,
 		loopIteration: 0,
 		failedDimensions: [],
 		tokensSpent: 0,
@@ -175,6 +179,8 @@ export function loadState(p: Paths): State | null {
 	s.frameStage = s.frameStage ?? "explore";
 	s.compileRetries = s.compileRetries ?? 0;
 	s.archRetries = s.archRetries ?? 0;
+	s.planRetries = s.planRetries ?? 0;
+	s.memoRelint = s.memoRelint ?? 0;
 	s.archApproved = s.archApproved ?? false;
 	s.archWinner = s.archWinner ?? null;
 	s.codegraphReady = s.codegraphReady ?? false;
@@ -411,6 +417,110 @@ export function readVerifyVerdicts(p: Paths): Record<VerifyDimension, "PASS" | "
 export function listSliceFiles(p: Paths): string[] {
 	if (!existsSync(p.slices)) return [];
 	return readdirSync(p.slices).filter((f) => /^\d{3}-.*\.md$/.test(f)).sort();
+}
+
+// --- Slice lint: deterministic structure + ordering checks on the plan output -
+
+export const SLICE_REQUIRED_SECTIONS = [
+	"## Objective",
+	"## Depends on",
+	"## Scope",
+	"## Out of scope",
+	"## Acceptance criteria",
+	"## Hints",
+] as const;
+
+/** Body of a `## Section` heading until the next `## ` (or end of file). */
+function sectionBody(text: string, heading: string): string | null {
+	const lines = text.split("\n");
+	const start = lines.findIndex((l) => l.trim().toLowerCase().startsWith(heading.toLowerCase()));
+	if (start === -1) return null;
+	const rest: string[] = [];
+	for (let i = start + 1; i < lines.length; i++) {
+		if (/^##\s/.test(lines[i].trim())) break;
+		rest.push(lines[i]);
+	}
+	return rest.join("\n");
+}
+
+/** True when a section body has at least one `-` or `N.` checklist item. */
+function hasChecklistItem(body: string | null): boolean {
+	return body !== null && body.split("\n").some((l) => /^\s*(\d+\.|-)\s+\S/.test(l));
+}
+
+/**
+ * Mechanical checks only on the planner's output: contiguous numbering, the
+ * required slice sections, populated Scope/Acceptance, slice 001 standing
+ * alone, and — the load-bearing one — no forward dependency (a slice may only
+ * depend on lower-numbered slices). Substance (does the decomposition serve
+ * the frame?) is left to the human gate and the future plan judge.
+ */
+export function lintSlices(p: Paths): FrameLint {
+	const findings: string[] = [];
+	const files = listSliceFiles(p);
+	if (files.length === 0) return { ok: false, findings: [`no slice files found in ${p.slices}`] };
+
+	const nums = files.map((f) => Number(f.slice(0, 3)));
+	for (let i = 0; i < nums.length; i++) {
+		if (nums[i] !== i + 1) {
+			findings.push(`slice numbering is not contiguous from 001: expected ${pad3(i + 1)}, found ${pad3(nums[i])} (${files[i]})`);
+			break;
+		}
+	}
+
+	files.forEach((file, idx) => {
+		const num = nums[idx];
+		const text = readFileSync(join(p.slices, file), "utf8");
+		for (const section of SLICE_REQUIRED_SECTIONS) {
+			if (sectionBody(text, section) === null) findings.push(`${file}: missing required section "${section}"`);
+		}
+		if (!hasChecklistItem(sectionBody(text, "## Scope"))) findings.push(`${file}: "## Scope" has no items`);
+		if (!hasChecklistItem(sectionBody(text, "## Acceptance criteria"))) findings.push(`${file}: "## Acceptance criteria" has no items`);
+
+		const deps = sectionBody(text, "## Depends on");
+		if (deps !== null) {
+			const depNums = [...deps.matchAll(/\b0*(\d{1,3})\b/g)].map((m) => Number(m[1]));
+			const isNone = /\bnone\b/i.test(deps);
+			if (num === 1 && !isNone && depNums.length > 0) {
+				findings.push(`${file}: slice 001 must depend on "none" (found ${depNums.map(pad3).join(", ")})`);
+			}
+			for (const d of depNums) {
+				if (d >= num) findings.push(`${file}: forward dependency — depends on ${pad3(d)} which is not a prior slice`);
+			}
+		}
+	});
+
+	return { ok: findings.length === 0, findings };
+}
+
+// --- Memo lint: the post-build memo is load-bearing for every later builder ---
+
+export const MEMO_REQUIRED_SECTIONS = [
+	"## What exists now",
+	"## Changed files",
+	"## Commit",
+	"## Tests",
+	"## Deviations",
+	"## Notes for later slices",
+] as const;
+
+/** Mechanical format check on a builder/fix-up memo: required sections, a
+ * populated changed-files list, and (when auto_commit) a commit hash. A lying
+ * memo is the reviewer's job; a malformed one is caught here for free. */
+export function lintMemo(file: string, autoCommit: boolean): FrameLint {
+	const findings: string[] = [];
+	if (!nonEmpty(file)) return { ok: false, findings: [`${file} is missing or empty`] };
+	const text = readFileSync(file, "utf8");
+	for (const section of MEMO_REQUIRED_SECTIONS) {
+		if (sectionBody(text, section) === null) findings.push(`missing required section "${section}"`);
+	}
+	const changed = sectionBody(text, "## Changed files");
+	if (!hasChecklistItem(changed)) findings.push(`"## Changed files" has no entries`);
+	if (autoCommit) {
+		const commit = sectionBody(text, "## Commit");
+		if (commit === null || !/[0-9a-f]{7,40}/i.test(commit)) findings.push(`"## Commit" has no commit hash (auto_commit is enabled)`);
+	}
+	return { ok: findings.length === 0, findings };
 }
 
 export function pad3(n: number): string {
