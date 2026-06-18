@@ -52,9 +52,14 @@ export interface SliceFlowConfig {
 	attackCount: number;
 	maxCompileRetries: number;
 	maxArchitectRetries: number;
+	maxPlanRetries: number;
 	maxLoopIterations: number;
 	maxFixupsPerSlice: number;
 	loopTokenBudget: number;
+	/** Re-verify ALL dimensions on every loop iteration, not just the failed
+	 * ones, so a fix that regresses a previously-passing dimension cannot reach
+	 * `done` on a stale PASS verdict. Correctness over cost; default true. */
+	reverifyAllInLoop: boolean;
 	autoCommit: boolean;
 	autoApprove: boolean;
 	gitignoreWorkDir: boolean;
@@ -71,9 +76,11 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	attackCount: 3,
 	maxCompileRetries: 2,
 	maxArchitectRetries: 2,
+	maxPlanRetries: 2,
 	maxLoopIterations: 5,
 	maxFixupsPerSlice: 2,
 	loopTokenBudget: 1_500_000,
+	reverifyAllInLoop: true,
 	autoCommit: true,
 	autoApprove: false,
 	gitignoreWorkDir: true,
@@ -102,14 +109,20 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 		attack: null,
 		compile: null,
 		frameJudge: "anthropic/claude-opus-4-8",
-		hypothesis: "anthropic/claude-haiku-4-5",
+		// Architecture hypotheses are high-leverage (every slice inherits their
+		// seams) and the generating agent (scout) is haiku-pinned, so a strong
+		// model is named explicitly rather than inherited. Only 3 runs per phase.
+		hypothesis: "anthropic/claude-opus-4-8",
 		architectJudge: "anthropic/claude-opus-4-8",
 		prototype: "anthropic/claude-haiku-4-5",
 		prototypeJudge: "anthropic/claude-opus-4-8",
 		plan: null,
 		build: null,
 		review: null,
-		fixup: "anthropic/claude-haiku-4-5",
+		// Fix-ups resolve blocker/major findings — the riskiest edits in the
+		// pipeline. null inherits the builder's strong session default rather
+		// than forcing the cheapest tier onto correctness-critical work.
+		fixup: null,
 		verify: "anthropic/claude-opus-4-8",
 	},
 };

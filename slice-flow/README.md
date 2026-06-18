@@ -186,9 +186,11 @@ session's default model.
   "attackCount": 3,
   "maxCompileRetries": 2,
   "maxArchitectRetries": 2,
+  "maxPlanRetries": 2,
   "maxLoopIterations": 5,
   "maxFixupsPerSlice": 2,
   "loopTokenBudget": 1500000,
+  "reverifyAllInLoop": true,
   "autoCommit": true,
   "autoApprove": false,
   "gitignoreWorkDir": true,
@@ -198,14 +200,14 @@ session's default model.
     "attack": null,
     "compile": null,
     "frameJudge": "anthropic/claude-opus-4-8",
-    "hypothesis": "anthropic/claude-haiku-4-5",
+    "hypothesis": "anthropic/claude-opus-4-8",
     "architectJudge": "anthropic/claude-opus-4-8",
     "prototype": "anthropic/claude-haiku-4-5",
     "prototypeJudge": "anthropic/claude-opus-4-8",
     "plan": null,
     "build": null,
     "review": null,
-    "fixup": "anthropic/claude-haiku-4-5",
+    "fixup": null,
     "verify": "anthropic/claude-opus-4-8"
   }
 }
@@ -216,6 +218,19 @@ Notes:
 - `loopTokenBudget` is enforced best-effort: token use is estimated
   (chars/4) from observed `subagent` tool IO, counted from the moment phase 6
   starts.
+- `reverifyAllInLoop: true` (default) re-runs all five verification dimensions
+  on every loop iteration, not only the failed ones, so a loop fix that
+  regresses a previously-passing dimension cannot reach `done` on a stale PASS.
+  Set it `false` to re-verify only the failed dimensions (cheaper, but a
+  regression in a passing dimension can slip through).
+- `maxPlanRetries` bounds the automatic replan when the deterministic slice
+  lint fails (non-contiguous numbering, missing slice sections, empty
+  Scope/Acceptance, or a forward dependency); after the budget the plan is
+  surfaced to the human gate with a WARNING.
+- `hypothesis` and `fixup` default to the strong tier (hypothesis names Opus
+  explicitly because its scout agent is Haiku-pinned; `fixup: null` inherits
+  the builder's session default) — architecture seams and correctness fix-ups
+  are too high-leverage for the cheapest model.
 - `autoCommit: true` makes each slice one commit (`slice NNN: <title>`); the
   baseline commit recorded at `/feature` time scopes the verification diff.
 - `gitignoreWorkDir` appends `feature-work/` to `.gitignore` so slice commits

@@ -65,3 +65,18 @@ test("the agents block contains no generic builtin token as a value", () => {
 test("config.ts no longer contains the stale fallback comment phrase", () => {
   assert.ok(!configText.includes("unchanged until slice-flow.json overrides"), "banned comment phrase still present");
 });
+
+import { DEFAULT_CONFIG } from "../extensions/lib/config.ts";
+
+test("high-leverage phases are not pinned to the cheapest tier (T0.2 re-tier)", () => {
+  // Architecture seams and correctness fix-ups must not run on the lightweight
+  // tier. hypothesis is named explicitly (its scout agent is haiku-pinned);
+  // fixup is null so it inherits the builder's strong session default.
+  assert.notEqual(DEFAULT_CONFIG.models.hypothesis, "anthropic/claude-haiku-4-5", "hypothesis must not be haiku");
+  assert.equal(DEFAULT_CONFIG.models.fixup, null, "fixup must inherit the strong session default");
+});
+
+test("loop re-verifies all dimensions by default and bounds plan replans", () => {
+  assert.equal(DEFAULT_CONFIG.reverifyAllInLoop, true);
+  assert.equal(typeof DEFAULT_CONFIG.maxPlanRetries, "number");
+});

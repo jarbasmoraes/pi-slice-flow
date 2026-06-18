@@ -37,6 +37,8 @@ import {
 	intakeMarkerOf,
 	lintArchitecture,
 	lintFrame,
+	lintMemo,
+	lintSlices,
 	listSliceFiles,
 	logEvent,
 	nonEmpty,
@@ -475,17 +477,34 @@ async function onPlan(env: Env): Promise<string> {
 	if (!nonEmpty(p.plan) || sliceFiles.length === 0) {
 		return reissue(env, `Plan or slice files missing (found ${sliceFiles.length} slices in ${p.slices})`);
 	}
+
+	// Deterministic slice lint (numbering, required sections, forward deps) buys
+	// a bounded auto-replan before any human sees the plan — mirrors the frame
+	// recompile loop. Substance is still judged at the human gate below.
+	const lint = lintSlices(p);
+	if (!lint.ok && state.planRetries < cfg.maxPlanRetries) {
+		state.planRetries += 1;
+		const notes = lint.findings.map((f) => `lint: ${f}`).join("\n");
+		logEvent(state, `slice lint failed -> replan ${state.planRetries}/${cfg.maxPlanRetries}`);
+		return issue(p, state, planDirective(p, state, cfg, notes), `Plan failed slice lint. Replanning (retry ${state.planRetries}/${cfg.maxPlanRetries}).`);
+	}
+	if (!lint.ok) logEvent(state, "slice lint still failing after max replans -> surfacing to gate");
 	if (ctx.hasUI) ctx.ui.notify(`Slices: ${sliceFiles.join(", ")}`, "info");
+	const lintWarn = lint.ok ? "" : ` WARNING: slice lint still failing after ${cfg.maxPlanRetries} replans (${lint.findings.length} findings).`;
 	const gated = await runGate(
 		env,
-		`Phase 3 (PLAN) complete — approve the ${sliceFiles.length} slices?`,
+		`Phase 3 (PLAN) complete — approve the ${sliceFiles.length} slices?${lintWarn}`,
 		`${p.plan} and ${p.slices}/`,
-		(notes) => planDirective(p, state, cfg, notes),
+		(notes) => {
+			state.planRetries = 0; // a human revise reopens the bounded lint-replan budget
+			return planDirective(p, state, cfg, notes);
+		},
 	);
 	if (gated !== null) return gated;
 	state.slices = sliceFiles;
 	state.sliceIndex = 0;
 	state.fixupRound = 0;
+	state.memoRelint = 0;
 	state.phase = "implement";
 	logEvent(state, `plan approved with ${sliceFiles.length} slices`);
 	return issue(p, state, buildDirective(p, state, cfg), `Plan approved: ${sliceFiles.length} slices.`);
@@ -496,6 +515,19 @@ async function onSliceReviewed(env: Env): Promise<string> {
 	const { ctx, p, cfg, state } = env;
 	const a = sliceArtifacts(p, state);
 	if (!nonEmpty(a.memoPath)) return reissue(env, `Memo ${a.memoPath} missing — the builder did not complete its contract`);
+
+	// Deterministic memo-format lint: the memo is load-bearing for every later
+	// builder, so a malformed one buys one bounded re-run of the same build/
+	// fix-up before we trust the review. A lying (vs malformed) memo remains the
+	// reviewer's job per reviewer-solid.
+	const memoLint = lintMemo(a.memoPath, cfg.autoCommit);
+	if (!memoLint.ok && state.memoRelint < 1) {
+		state.memoRelint += 1;
+		logEvent(state, `${a.sliceId} memo lint failed -> re-run (${memoLint.findings.join("; ")})`);
+		const redo = state.fixupRound > 0 ? fixupDirective(p, state, cfg) : buildDirective(p, state, cfg);
+		return issue(p, state, redo, `Memo failed format lint: ${memoLint.findings.join("; ")}. Re-running ${a.sliceId} so the memo is well-formed.`);
+	}
+	state.memoRelint = 0;
 	const verdict = verdictOf(a.reviewPath);
 	if (verdict === null) return reissue(env, `Review verdict missing or malformed in ${a.reviewPath}`);
 
@@ -524,6 +556,7 @@ async function onSliceReviewed(env: Env): Promise<string> {
 	// Advance to the next slice or to verification.
 	state.sliceIndex += 1;
 	state.fixupRound = 0;
+	state.memoRelint = 0;
 	if (state.sliceIndex < state.slices.length) {
 		return issue(p, state, buildDirective(p, state, cfg), `${a.sliceId} complete.`);
 	}

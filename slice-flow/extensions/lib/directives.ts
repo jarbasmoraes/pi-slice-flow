@@ -446,9 +446,15 @@ export function loopDirective(p: Paths, state: State, cfg: SliceFlowConfig): Dir
 			...withModel(cfg.models.fixup),
 		};
 	});
-	const reVerify = state.failedDimensions.map((dim) => ({
+	// Re-verify ALL dimensions (not just the failed ones) so a fix that
+	// regresses a previously-passing dimension cannot reach `done` on a stale
+	// PASS verdict left on disk from before the fix ran. Each verifier rewrites
+	// its own verify/<dim>.md, so onVerified always reads fresh evidence.
+	// reverifyAllInLoop=false restores the cheaper failed-only behavior.
+	const reVerifyDims = cfg.reverifyAllInLoop ? VERIFY_DIMENSIONS : state.failedDimensions;
+	const reVerify = reVerifyDims.map((dim) => ({
 		...verifierTask(p, state, cfg, dim),
-		label: `Re-verify ${dim}`,
+		label: state.failedDimensions.includes(dim) ? `Re-verify ${dim}` : `Regression-check ${dim}`,
 	}));
 	return {
 		kind: "loop-fix",
