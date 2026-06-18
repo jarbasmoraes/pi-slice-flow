@@ -5,7 +5,7 @@
  * without a filesystem or a subprocess.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 export type CodegraphState = "ready" | "nudge" | "silent";
@@ -24,6 +24,22 @@ export function classifyCodegraph(graphDbExists: boolean, cliOnPath: boolean): C
 	return "silent";
 }
 
+/**
+ * Pure-ish disk probe: is there a codegraph index under `<cwd>/.codegraph/`?
+ * codegraph names its database after the project (e.g. `codegraph.db`), not a
+ * fixed `graph.db`, and its own `.gitignore` matches `*.db` — so detect any
+ * `*.db` file in the directory rather than a single hard-coded name.
+ */
+export function codegraphIndexExists(cwd: string): boolean {
+	const dir = join(cwd, ".codegraph");
+	if (!existsSync(dir)) return false;
+	try {
+		return readdirSync(dir).some((f) => f.endsWith(".db"));
+	} catch {
+		return false;
+	}
+}
+
 /** Pure: the one-time startup line for each state ("" means say nothing). */
 export function codegraphPreamble(cls: CodegraphState): string {
 	switch (cls) {
@@ -37,13 +53,12 @@ export function codegraphPreamble(cls: CodegraphState): string {
 }
 
 /**
- * Probe the project: a present `<cwd>/.codegraph/graph.db` means `ready` without
- * touching the CLI. Otherwise ask whether `codegraph` is on PATH; `nudge` when
- * the probe exits 0, `silent` on any non-zero exit or thrown error.
+ * Probe the project: a `*.db` index under `<cwd>/.codegraph/` means `ready`
+ * without touching the CLI. Otherwise ask whether `codegraph` is on PATH;
+ * `nudge` when the probe exits 0, `silent` on any non-zero exit or thrown error.
  */
 export async function detectCodegraph(cwd: string, exec: ExecProbe): Promise<CodegraphState> {
-	const graphDbExists = existsSync(join(cwd, ".codegraph", "graph.db"));
-	if (graphDbExists) return classifyCodegraph(true, false);
+	if (codegraphIndexExists(cwd)) return classifyCodegraph(true, false);
 	let cliOnPath = false;
 	try {
 		const res = await exec("which", ["codegraph"], { timeout: 5000 });

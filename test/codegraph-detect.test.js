@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { classifyCodegraph, codegraphPreamble, detectCodegraph } from "../extensions/lib/codegraph.ts";
+import { classifyCodegraph, codegraphIndexExists, codegraphPreamble, detectCodegraph } from "../extensions/lib/codegraph.ts";
 import { createState, loadState, workPaths } from "../extensions/lib/workspace.ts";
 
 test("classifyCodegraph maps the three states", () => {
@@ -25,20 +25,30 @@ test("codegraphPreamble is non-empty for ready/nudge and empty for silent", () =
   assert.equal(codegraphPreamble("silent"), "");
 });
 
-test("detectCodegraph resolves ready when graph.db exists (exec not consulted)", async () => {
+test("codegraphIndexExists detects any *.db under .codegraph/ (real-world codegraph.db name)", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "slice-flow-cg-index-"));
+  assert.equal(codegraphIndexExists(cwd), false, "no .codegraph dir -> false");
+  mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+  assert.equal(codegraphIndexExists(cwd), false, "empty .codegraph dir -> false");
+  writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "");
+  assert.equal(codegraphIndexExists(cwd), true, "codegraph.db present -> true");
+});
+
+test("detectCodegraph resolves ready when a .codegraph/*.db index exists (exec not consulted)", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "slice-flow-cg-ready-"));
   mkdirSync(join(cwd, ".codegraph"), { recursive: true });
-  writeFileSync(join(cwd, ".codegraph", "graph.db"), "");
+  // codegraph names its db after the project, not a fixed graph.db.
+  writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "");
   let called = false;
   const exec = async () => {
     called = true;
     return { code: 0 };
   };
   assert.equal(await detectCodegraph(cwd, exec), "ready");
-  assert.equal(called, false, "exec must not be consulted when graph.db exists");
+  assert.equal(called, false, "exec must not be consulted when an index exists");
 });
 
-test("detectCodegraph resolves nudge when graph.db absent and exec returns code 0", async () => {
+test("detectCodegraph resolves nudge when no index and exec returns code 0", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "slice-flow-cg-nudge-"));
   const exec = async () => ({ code: 0 });
   assert.equal(await detectCodegraph(cwd, exec), "nudge");
