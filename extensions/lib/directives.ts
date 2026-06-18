@@ -14,8 +14,11 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SliceFlowConfig } from "./config.ts";
 import {
+	ARCH_ATTACK_CHARTERS,
 	ATTACK_CHARTERS,
 	HYPOTHESIS_ANGLES,
+	archAttackBrief,
+	archDispositionBrief,
 	architectJudgeBrief,
 	attackBrief,
 	buildBrief,
@@ -26,6 +29,7 @@ import {
 	intakeBrief,
 	loopFixBrief,
 	planBrief,
+	planJudgeBrief,
 	prototypeBrief,
 	prototypeJudgeBrief,
 	researchBrief,
@@ -285,6 +289,49 @@ export function architectJudgeDirective(p: Paths, state: State, cfg: SliceFlowCo
 	};
 }
 
+/** The adversarial attack panel on the winning architecture: parallel
+ * charter-bound attackers, then a synthesis step that dispositions every
+ * objection and emits the ARCH-ATTACK marker. Runs once before the gate. */
+export function archAttackDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
+	let seq = nextSeqIn(p.archAttacks);
+	const tasks = ARCH_ATTACK_CHARTERS.slice(0, cfg.attackCount).map((charter) => {
+		const outPath = join(p.archAttacks, `${pad3(seq)}-${charter.id}.md`);
+		seq += 1;
+		const step = makeBriefStep(p, state, `arch-attack-${charter.id}-brief`, archAttackBrief(p, charter.id, outPath));
+		return {
+			agent: cfg.agents.attack,
+			task: step.task,
+			label: `Arch attack: ${charter.id}`,
+			phase: "Architect",
+			skill: "architecture-attack",
+			reads: [step.briefPath, p.frame, p.architecture],
+			output: outPath,
+			...withModel(cfg.models.attack),
+		};
+	});
+	const attackPaths = tasks.map((t) => t.output);
+	const dispoStep = makeBriefStep(p, state, "arch-disposition-brief", archDispositionBrief(p));
+	return {
+		kind: "arch-attack",
+		seq: state.seq,
+		label: "Phase 2 — ARCHITECT: attack panel + dispositions",
+		expects: [...attackPaths, p.archDispositions],
+		args: freshChain(p, state.seq, "arch-attack", [
+			{ parallel: tasks, concurrency: tasks.length },
+			{
+				agent: cfg.agents.architectJudge,
+				task: dispoStep.task,
+				label: "Disposition attacks",
+				phase: "Architect",
+				skill: "architecture-attack",
+				reads: [dispoStep.briefPath, p.frame, p.architecture, ...attackPaths],
+				output: p.archDispositions,
+				...withModel(cfg.models.architectJudge),
+			},
+		]),
+	};
+}
+
 export function prototypeDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
 	const parallel = Array.from({ length: cfg.prototypeCount }, (_, i) => {
 		const n = i + 1;
@@ -313,6 +360,32 @@ export function prototypeDirective(p: Paths, state: State, cfg: SliceFlowConfig)
 				task: judgeStep.task,
 				label: "Judge prototypes",
 				phase: "Prototype",
+				skill: "prototype-rubric",
+				reads: [judgeStep.briefPath, p.frame, p.architecture],
+				output: join(p.prototypes, "JUDGEMENT.md"),
+				...withModel(cfg.models.prototypeJudge),
+			},
+		]),
+	};
+}
+
+/** Re-judge only: one judge run over the existing (frozen) prototype dirs. Used
+ * for lint retries and gate-revision re-judges, so a malformed judgement costs
+ * one strong-model run, not a full prototype fan-out. */
+export function prototypeJudgeDirective(p: Paths, state: State, cfg: SliceFlowConfig, notes?: string): Directive {
+	const judgeStep = makeBriefStep(p, state, "prototype-rejudge-brief", prototypeJudgeBrief(p, cfg.prototypeCount, notes));
+	return {
+		kind: "prototype-judge",
+		seq: state.seq,
+		label: `Phase 3a — PROTOTYPE: re-judge (round ${state.prototypeRetries})`,
+		expects: [join(p.prototypes, "JUDGEMENT.md")],
+		args: freshChain(p, state.seq, `prototype-rejudge-r${state.prototypeRetries}`, [
+			{
+				agent: cfg.agents.prototypeJudge,
+				task: judgeStep.task,
+				label: "Re-judge prototypes",
+				phase: "Prototype",
+				skill: "prototype-rubric",
 				reads: [judgeStep.briefPath, p.frame, p.architecture],
 				output: join(p.prototypes, "JUDGEMENT.md"),
 				...withModel(cfg.models.prototypeJudge),
@@ -328,11 +401,13 @@ export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, note
 	const skills = ["slice-rules"];
 	if (state.ui === "existing") skills.push("design-guidelines");
 
+	const judgeStep = makeBriefStep(p, state, "plan-judge-brief", planJudgeBrief(p));
 	return {
 		kind: "plan",
 		seq: state.seq,
-		label: "Phase 3 — PLAN",
-		args: freshChain(p, state.seq, "plan", [
+		label: `Phase 3 — PLAN${notes ? ` (retry ${state.planRetries})` : ""}`,
+		expects: [p.plan, p.planJudgement],
+		args: freshChain(p, state.seq, `plan${notes ? `-r${state.planRetries}` : ""}`, [
 			{
 				agent: cfg.agents.plan,
 				task: step.task,
@@ -342,6 +417,18 @@ export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, note
 				reads,
 				output: p.plan,
 				...withModel(cfg.models.plan),
+			},
+			{
+				agent: cfg.agents.planJudge,
+				task: judgeStep.task,
+				label: "Judge plan decomposition",
+				phase: "Plan",
+				skill: "plan-rubric",
+				// The planner writes p.plan and the slices in the prior step; the
+				// judge enumerates p.slices/ itself (see the brief).
+				reads: [judgeStep.briefPath, p.frame, p.architecture, p.plan],
+				output: p.planJudgement,
+				...withModel(cfg.models.planJudge),
 			},
 		]),
 	};

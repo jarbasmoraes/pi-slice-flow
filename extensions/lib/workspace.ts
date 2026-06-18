@@ -38,8 +38,10 @@ export interface State {
 	frameStage: FrameStage;
 	compileRetries: number;
 	archRetries: number; // bounded re-judge rounds for the architecture document
-	planRetries: number; // bounded auto-replan rounds when the slice lint fails
+	planRetries: number; // bounded auto-replan rounds when the slice lint/judge fails
+	prototypeRetries: number; // bounded re-judge rounds when the prototype judgement lint fails
 	archApproved: boolean; // gate approval persisted before the UI question (atomicity)
+	archAttacked: boolean; // the attack panel ran on the current winner (run once before the gate)
 	archWinner: string | null; // parsed "WINNER: hypothesis-<id>" marker
 	pending: Directive | null;
 	ui: "none" | "greenfield" | "existing" | null;
@@ -76,7 +78,10 @@ export interface Paths {
 	frameJudgement: string;
 	frame: string;
 	architecture: string;
+	archAttacks: string;
+	archDispositions: string;
 	plan: string;
+	planJudgement: string;
 	report: string;
 }
 
@@ -107,7 +112,10 @@ export function workPaths(cwd: string, workDir: string, slug: string): Paths {
 		frameJudgement: join(root, "frame", "judgement.md"),
 		frame: join(root, "01-frame.md"),
 		architecture: join(root, "02-architecture.md"),
+		archAttacks: join(root, "arch", "attacks"),
+		archDispositions: join(root, "02-architecture-attacks.md"),
 		plan: join(root, "03-plan.md"),
+		planJudgement: join(root, "03-plan-judgement.md"),
 		report: join(root, "REPORT.md"),
 	};
 }
@@ -127,6 +135,7 @@ export function ensureWorkTree(p: Paths): void {
 		p.frameDir,
 		p.frameResearch,
 		p.frameAttacks,
+		p.archAttacks,
 	]) {
 		mkdirSync(dir, { recursive: true });
 	}
@@ -151,7 +160,9 @@ export function createState(
 		compileRetries: 0,
 		archRetries: 0,
 		planRetries: 0,
+		prototypeRetries: 0,
 		archApproved: false,
+		archAttacked: false,
 		archWinner: null,
 		pending: null,
 		ui: null,
@@ -178,7 +189,9 @@ export function loadState(p: Paths): State | null {
 	s.compileRetries = s.compileRetries ?? 0;
 	s.archRetries = s.archRetries ?? 0;
 	s.planRetries = s.planRetries ?? 0;
+	s.prototypeRetries = s.prototypeRetries ?? 0;
 	s.archApproved = s.archApproved ?? false;
+	s.archAttacked = s.archAttacked ?? false;
 	s.archWinner = s.archWinner ?? null;
 	s.codegraphReady = s.codegraphReady ?? false;
 	return s;
@@ -365,6 +378,34 @@ export function winnerOf(file: string): string | null {
 	if (!existsSync(file)) return null;
 	const match = readFileSync(file, "utf8").match(/WINNER:\s*(hypothesis-\d+)/i);
 	return match ? match[1].toLowerCase() : null;
+}
+
+/** First `ARCH-ATTACK: HOLDS|RECONSIDER` marker in the attack dispositions; null when absent. */
+export function archAttackMarkerOf(file: string): "HOLDS" | "RECONSIDER" | null {
+	if (!existsSync(file)) return null;
+	const m = readFileSync(file, "utf8").match(/ARCH-ATTACK:\s*(HOLDS|RECONSIDER)/i);
+	return m ? (m[1].toUpperCase() as "HOLDS" | "RECONSIDER") : null;
+}
+
+/** First `WINNER: proto-<n>` marker in the prototype judgement; null when absent. */
+export function prototypeWinnerOf(file: string): string | null {
+	if (!existsSync(file)) return null;
+	const m = readFileSync(file, "utf8").match(/WINNER:\s*(proto-\d+)/i);
+	return m ? m[1].toLowerCase() : null;
+}
+
+/** Lint the prototype judgement: a parseable WINNER marker that names a real
+ * prototype directory carrying a README. Mechanical only — the taste call is
+ * the judge's and the human gate's. */
+export function lintPrototype(p: Paths): FrameLint {
+	const judgement = join(p.prototypes, "JUDGEMENT.md");
+	const winner = prototypeWinnerOf(judgement);
+	if (winner === null) return { ok: false, findings: [`missing first line "WINNER: proto-<n>" in ${judgement}`] };
+	const findings: string[] = [];
+	const dir = join(p.prototypes, winner);
+	if (!existsSync(dir)) findings.push(`winner ${winner} names a directory that does not exist`);
+	else if (!existsSync(join(dir, "README.md"))) findings.push(`winner ${winner} has no README.md`);
+	return { ok: findings.length === 0, findings };
 }
 
 /** Hypothesis files currently on disk for this task, in id order. */

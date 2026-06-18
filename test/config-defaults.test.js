@@ -12,14 +12,15 @@ const configText = readFileSync(configPath, "utf8");
 const expectedAgents = {
   intake: "slice-flow-scout",
   research: "slice-flow-researcher",
-  attack: "slice-flow-oracle",
+  attack: "slice-flow-oracle-adversary",
   compile: "slice-flow-scout",
-  frameJudge: "slice-flow-oracle",
+  frameJudge: "slice-flow-oracle-judge",
   hypothesis: "slice-flow-scout",
-  architectJudge: "slice-flow-oracle",
+  architectJudge: "slice-flow-oracle-judge",
   prototype: "slice-flow-builder",
-  prototypeJudge: "slice-flow-oracle",
+  prototypeJudge: "slice-flow-oracle-judge",
   plan: "slice-flow-planner",
+  planJudge: "slice-flow-oracle-judge",
   build: "slice-flow-builder",
   review: "slice-flow-reviewer",
   fixup: "slice-flow-builder",
@@ -35,7 +36,7 @@ function agentsBlock() {
   return configText.slice(start, end + 1);
 }
 
-test("DEFAULT_CONFIG.agents maps all 14 phases to namespaced slice-flow-<role> agents", () => {
+test("DEFAULT_CONFIG.agents maps all phases to namespaced slice-flow-<role> agents", () => {
   const block = agentsBlock();
   for (const [phase, agent] of Object.entries(expectedAgents)) {
     assert.match(
@@ -49,9 +50,9 @@ test("DEFAULT_CONFIG.agents maps all 14 phases to namespaced slice-flow-<role> a
 test("every quoted value in the agents block is a slice-flow-* name", () => {
   const block = agentsBlock();
   const values = [...block.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  assert.equal(values.length, 14, "agents block must have 14 values");
+  assert.equal(values.length, 15, "agents block must have 15 values");
   for (const value of values) {
-    assert.match(value, /^slice-flow-(scout|researcher|builder|oracle|planner|reviewer)$/, `value ${value} is not namespaced`);
+    assert.match(value, /^slice-flow-(scout|researcher|builder|oracle-adversary|oracle-judge|planner|reviewer)$/, `value ${value} is not namespaced`);
   }
 });
 

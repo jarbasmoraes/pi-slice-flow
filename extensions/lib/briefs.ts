@@ -105,6 +105,35 @@ Raise only objections you can support; an adversary who pads with weak objection
 Do not edit any files.`;
 }
 
+/** Architecture attack charters, parallel to the frame's ATTACK_CHARTERS but
+ * aimed at the winning design's structure. The detail lives in the
+ * architecture-attack skill; the id selects the charter. */
+export const ARCH_ATTACK_CHARTERS: AttackCharter[] = [
+	{ id: "wrong-seam", brief: "The design cuts the system at the wrong boundary; the seam will leak." },
+	{ id: "simpler-structure", brief: "A materially simpler structure reaches the same frame outcome." },
+	{ id: "fights-the-codebase", brief: "The design contradicts an established repo pattern or degrades existing behavior." },
+];
+
+export function archAttackBrief(p: Paths, charterId: string, outPath: string): string {
+	return `# Attack the architecture: ${charterId}
+
+The approved frame and the winning architecture (${p.architecture}) are injected. You are a fresh-context adversary; you owe the design no agreement.
+
+Apply the injected architecture-attack skill. Your charter is "${charterId}" — argue its strongest honest case against the winning design, grounded in the frame and the actual code. Raise only objections you can support.
+
+Your final answer is saved automatically to ${outPath}. Do not edit any files.`;
+}
+
+export function archDispositionBrief(p: Paths): string {
+	return `# Disposition the architecture attacks
+
+The frame and the winning architecture (${p.architecture}) are injected. The attack reports live under ${p.archAttacks}/ — list and read every one.
+
+Apply the injected architecture-attack skill (disposition role). Disposition every objection — resolved, accepted as risk, or rejected — and emit the required first-line ARCH-ATTACK marker followed by a "## Attack dispositions" section.
+
+Your final answer is saved automatically to ${p.archDispositions}. Do not edit any files.`;
+}
+
 export function compileBrief(p: Paths, feature: string, notes?: string): string {
 	return `# Compile the frame document
 
@@ -200,19 +229,16 @@ Hard rules:
 - Favor zero-build artifacts (single HTML file, or the project's existing dev stack mirrored locally) so the user can open it instantly.`;
 }
 
-export function prototypeJudgeBrief(p: Paths, total: number): string {
+export function prototypeJudgeBrief(p: Paths, total: number, notes?: string): string {
 	return `# Judge the UI prototypes
 
-${total} prototypes live in ${p.prototypes}/proto-1 .. proto-${total}. The frame and architecture are injected.
+${total} prototypes live in ${p.prototypes}/proto-1 .. proto-${total}. The frame and architecture are injected. Inspect every prototype's code and README.
 
-Inspect every prototype's code and README. Your final answer is saved automatically to ${join(p.prototypes, "JUDGEMENT.md")} and must contain:
+Apply the injected prototype-rubric skill. It defines the refute-stance criteria, the per-candidate record you must produce so a human can override your pick, and the required first-line WINNER format.
 
-1. **Winner** — the winning directory name and a description of its direction precise enough that a planner who never sees the prototype can specify the real UI from it.
-2. **Why it won** — fit with the frame, clarity, and feasibility within the approved architecture.
-3. **Per-loser verdict** — one sentence each on why it lost.
-4. **Salvage** — any specific ideas from losing prototypes worth folding into the plan.
+Your final answer is saved automatically to ${join(p.prototypes, "JUDGEMENT.md")}.
 
-Do not edit any files.`;
+Do not edit any files.${revisionFooter(notes)}`;
 }
 
 export function planBrief(p: Paths, ui: "none" | "greenfield" | "existing" | null, notes?: string): string {
@@ -237,6 +263,19 @@ Produce two things:
 Each slice file must be a self-sufficient contract: a builder who sees ONLY that slice file (plus memos of prior slices) must be able to implement it. Never assume the builder has read this plan.
 
 Do not edit project source files — you only write under ${p.slices}/.${revisionFooter(notes, " — address them and rewrite plan and slices")}`;
+}
+
+export function planJudgeBrief(p: Paths): string {
+	return `# Judge the plan decomposition
+
+The frame, the winning architecture, and the plan (${p.plan}) are injected. The slice files live under ${p.slices}/ — list and read every one before judging.
+
+Apply the injected plan-rubric skill. It defines the dimensions of decomposition soundness you must refute and the required verdict format. Judge ONLY the decomposition: not code quality, not value, not UI. Deterministic structure (numbering, required sections, forward-dependency syntax) is already linted — do not re-report it.
+
+${VERDICT_RULE}
+Your final answer is saved automatically to ${p.planJudgement}.
+
+Do not edit any files.`;
 }
 
 export function buildBrief(p: Paths, a: SliceArtifacts, autoCommit: boolean): string {

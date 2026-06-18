@@ -27,9 +27,9 @@ pi install /path/to/slice-flow
 pi
 ```
 
-slice-flow's six dedicated agents (`slice-flow-scout`,
-`slice-flow-researcher`, `slice-flow-builder`, `slice-flow-oracle`,
-`slice-flow-planner`, `slice-flow-reviewer`) ship inside the package under
+slice-flow's seven dedicated agents (`slice-flow-scout`,
+`slice-flow-researcher`, `slice-flow-builder`, `slice-flow-oracle-adversary`,
+`slice-flow-oracle-judge`, `slice-flow-planner`, `slice-flow-reviewer`) ship inside the package under
 `agents/`. pi's package manager has no "agents" resource type, so `pi install`
 does not copy them; the first `/feature` provisions them into `.pi/agents/`
 (see step 2 below). So immediately after `pi install` — before any `/feature` —
@@ -97,7 +97,7 @@ directive fans out `agent: "slice-flow-researcher"` tasks, and sourced findings 
 sources and records conclusions in the ledger. (This exercises the package's
 own `web_search`/`fetch_content` tools — no API keys.)
 
-**2d. Attack.** Say "attack this framing". **Check:** three `agent: "slice-flow-oracle"`
+**2d. Attack.** Say "attack this framing". **Check:** three `agent: "slice-flow-oracle-adversary"`
 tasks run (wrong-problem, simpler-alternative, breaks-existing), reports land
 in `feature-work/frame/attacks/`, and the partner walks you through the
 objections, recording dispositions in the ledger.
@@ -107,7 +107,7 @@ must be refused with a message about the empty ledger.
 
 **2f. Compile + validate.** Say you are satisfied; the partner calls
 `converge`. **Check:** a two-step chain runs (`slice-flow-scout` compiler with
-`skill: "zinsser-framing"`, then `slice-flow-oracle` fidelity judge), producing
+`skill: "zinsser-framing"`, then `slice-flow-oracle-judge` fidelity judge), producing
 `01-frame.md` (with `## Acceptance criteria`, `## Out of scope`,
 `## Open questions`) and `frame/judgement.md` starting `VERDICT: PASS`.
 If the compile is bad (hedge words / missing sections), a recompile is issued
@@ -129,7 +129,7 @@ feedback, converge again, then approve.
   first line, has `## Winner` / `## Scores` (markdown table) /
   `## Why the losers lost` / `## Risks carried forward`, and a mermaid block.
 - The directive JSON shows one chain with a `parallel` group of 3 (`failFast:
-  true`, `outputMode: "file-only"` per step) followed by a `slice-flow-oracle`
+  true`, `outputMode: "file-only"` per step) followed by a `slice-flow-oracle-judge`
   judge step, and a top-level `expects` listing all three hypothesis files plus the
   architecture doc.
 - `state.json` shows `archWinner` set after approval.

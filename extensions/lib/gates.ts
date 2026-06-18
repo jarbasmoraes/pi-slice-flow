@@ -5,15 +5,32 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { SliceFlowConfig } from "./config.ts";
+import type { GateName, SliceFlowConfig } from "./config.ts";
 
 export type GateContext = Pick<ExtensionContext, "hasUI" | "ui">;
 
 export type GateResult = { decision: "approve" | "revise" | "abort" | "pause"; notes?: string };
 
-export async function gate(ctx: GateContext, cfg: SliceFlowConfig, title: string, artifact: string): Promise<GateResult> {
+/**
+ * Run a human approval gate. The autonomy policy is consulted first: a gate set
+ * to "auto" trusts the phase's own judges/verifiers and advances without asking,
+ * even when a UI is present — this is the per-gate path to zero-touch. `frame`
+ * is never auto-trusted here (intent is owned by the human). When the gate is
+ * still "human", behavior is unchanged: ask if a UI is present, else fall back
+ * to `autoApprove` (approve unattended) or pause.
+ *
+ * `clean` is the trust contract: an automated path (autonomy "auto" OR
+ * `autoApprove`) may approve ONLY when the artifact passed its judges/lints.
+ * A known-failing artifact (`clean=false`, after retries exhausted) is never
+ * rubber-stamped — it falls back to a human, or pauses when none is present, so
+ * "FAIL" can never silently ship. This is what makes the autonomy map safe to
+ * flip to "auto".
+ */
+export async function gate(ctx: GateContext, cfg: SliceFlowConfig, title: string, artifact: string, gateId?: GateName, clean = true): Promise<GateResult> {
+	const trusted = gateId !== undefined && gateId !== "frame" && cfg.autonomy?.[gateId] === "auto";
+	if (trusted && clean) return { decision: "approve" };
 	if (!ctx.hasUI) {
-		return cfg.autoApprove ? { decision: "approve" } : { decision: "pause" };
+		return cfg.autoApprove && clean ? { decision: "approve" } : { decision: "pause" };
 	}
 	ctx.ui.notify(`Review ${artifact}`, "info");
 	const choice = await ctx.ui.select(title, ["Approve and continue", "Request changes", "Abort workflow"]);

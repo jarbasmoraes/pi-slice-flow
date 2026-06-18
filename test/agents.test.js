@@ -9,7 +9,7 @@ const repoRoot = join(here, "..", "..");
 const bundleDir = join(here, "..", "agents");
 const discoveredDir = join(repoRoot, ".pi", "agents");
 
-const roles = ["scout", "researcher", "builder", "oracle", "planner", "reviewer"];
+const roles = ["scout", "researcher", "builder", "oracle-adversary", "oracle-judge", "planner", "reviewer"];
 
 function frontmatter(text) {
   const lines = text.split("\n");
@@ -26,7 +26,7 @@ function frontmatterValue(text, key) {
   return undefined;
 }
 
-test("all six bundle files exist in slice-flow/agents/", () => {
+test("all bundle files exist in slice-flow/agents/", () => {
   for (const role of roles) {
     assert.ok(existsSync(join(bundleDir, `slice-flow-${role}.md`)), `missing bundle slice-flow-${role}.md`);
   }
@@ -60,7 +60,8 @@ test("model lines are preserved per role", () => {
 
   assert.equal(frontmatterValue(readFileSync(join(bundleDir, "slice-flow-scout.md"), "utf8"), "model"), "anthropic/claude-haiku-4-5");
   assert.equal(frontmatterValue(readFileSync(join(bundleDir, "slice-flow-researcher.md"), "utf8"), "model"), "anthropic/claude-haiku-4-5");
-  assert.equal(frontmatterValue(readFileSync(join(bundleDir, "slice-flow-oracle.md"), "utf8"), "model"), "anthropic/claude-opus-4-8");
+  assert.equal(frontmatterValue(readFileSync(join(bundleDir, "slice-flow-oracle-adversary.md"), "utf8"), "model"), "anthropic/claude-opus-4-8");
+  assert.equal(frontmatterValue(readFileSync(join(bundleDir, "slice-flow-oracle-judge.md"), "utf8"), "model"), "anthropic/claude-opus-4-8");
   assert.equal(frontmatterValue(readFileSync(join(bundleDir, "slice-flow-reviewer.md"), "utf8"), "model"), "anthropic/claude-opus-4-8");
 });
 
@@ -77,7 +78,7 @@ test("apart from the name line, each bundle is byte-identical to its source", ()
   }
 });
 
-test("the same six namespaced files exist in .pi/agents/", () => {
+test("the same namespaced files exist in .pi/agents/", () => {
   for (const role of roles) {
     const discovered = join(discoveredDir, `slice-flow-${role}.md`);
     assert.ok(existsSync(discovered), `missing discovered copy slice-flow-${role}.md`);
@@ -88,7 +89,7 @@ test("the same six namespaced files exist in .pi/agents/", () => {
 
 test("slice-flow.json agents object points only at namespaced agents", () => {
   const cfg = JSON.parse(readFileSync(join(repoRoot, "slice-flow.json"), "utf8"));
-  const pattern = /^slice-flow-(scout|researcher|builder|oracle|planner|reviewer)$/;
+  const pattern = /^slice-flow-(scout|researcher|builder|oracle-adversary|oracle-judge|planner|reviewer)$/;
   for (const [phase, value] of Object.entries(cfg.agents)) {
     assert.match(value, pattern, `agent for phase ${phase} is not namespaced: ${value}`);
   }

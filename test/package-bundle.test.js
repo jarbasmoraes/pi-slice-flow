@@ -10,7 +10,7 @@ const pkgPath = join(here, "..", "package.json");
 const bundleDir = join(here, "..", "agents");
 const discoveredDir = join(repoRoot, ".pi", "agents");
 
-const roles = ["scout", "researcher", "builder", "oracle", "planner", "reviewer"];
+const roles = ["scout", "researcher", "builder", "oracle-adversary", "oracle-judge", "planner", "reviewer"];
 
 const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
 
@@ -28,7 +28,7 @@ test("pi.extensions, pi.skills, pi.prompts are unchanged", () => {
   assert.deepEqual(pkg.pi.prompts, ["./prompts"]);
 });
 
-test("all six slice-flow-<role> bundle files still exist", () => {
+test("all slice-flow-<role> bundle files still exist", () => {
   for (const role of roles) {
     assert.ok(
       existsSync(join(bundleDir, `slice-flow-${role}.md`)),
@@ -37,7 +37,7 @@ test("all six slice-flow-<role> bundle files still exist", () => {
   }
 });
 
-test("none of the six orphaned old slice-<role>.md files remain in .pi/agents/", () => {
+test("none of the orphaned old slice-<role>.md files remain in .pi/agents/", () => {
   for (const role of roles) {
     assert.ok(
       !existsSync(join(discoveredDir, `slice-${role}.md`)),
@@ -46,7 +46,7 @@ test("none of the six orphaned old slice-<role>.md files remain in .pi/agents/",
   }
 });
 
-test("all six namespaced slice-flow-<role>.md files still exist in .pi/agents/", () => {
+test("all namespaced slice-flow-<role>.md files still exist in .pi/agents/", () => {
   for (const role of roles) {
     assert.ok(
       existsSync(join(discoveredDir, `slice-flow-${role}.md`)),

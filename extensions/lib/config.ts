@@ -18,11 +18,18 @@ export interface SliceFlowModels {
 	prototype: string | null;
 	prototypeJudge: string | null;
 	plan: string | null;
+	planJudge: string | null;
 	build: string | null;
 	review: string | null;
 	fixup: string | null;
 	verify: string | null;
 }
+
+/** The human-approval gates, in pipeline order. `frame` is pinned to a human
+ * (intent is created there, not verified) and is never auto-approved by the
+ * autonomy map. The rest walk to `auto` one at a time as trust is earned. */
+export type GateName = "frame" | "architect" | "prototype" | "plan" | "verify";
+export type AutonomyMode = "human" | "auto";
 
 /** Which subagent runs each phase. Same keys as SliceFlowModels so a phase's
  * agent and model are tuned side by side. Values are agent names resolved by
@@ -38,6 +45,7 @@ export interface SliceFlowAgents {
 	prototype: string;
 	prototypeJudge: string;
 	plan: string;
+	planJudge: string;
 	build: string;
 	review: string;
 	fixup: string;
@@ -53,6 +61,7 @@ export interface SliceFlowConfig {
 	maxCompileRetries: number;
 	maxArchitectRetries: number;
 	maxPlanRetries: number;
+	maxPrototypeRetries: number;
 	maxLoopIterations: number;
 	maxFixupsPerSlice: number;
 	loopTokenBudget: number;
@@ -61,8 +70,17 @@ export interface SliceFlowConfig {
 	 * `done` on a stale PASS verdict. Correctness over cost; default true. */
 	reverifyAllInLoop: boolean;
 	autoCommit: boolean;
+	/** Global fallback: when no UI is present, approve gates instead of pausing.
+	 * Distinct from `autonomy`, which is a per-gate trust policy that skips the
+	 * human even when a UI is present. `frame` is never auto-approved by the
+	 * autonomy map regardless. */
 	autoApprove: boolean;
 	gitignoreWorkDir: boolean;
+	/** Per-gate trust policy. "human" asks (today's default everywhere); "auto"
+	 * trusts the phase's own judges/verifiers and advances without asking, even
+	 * with a UI present. The path to a zero-touch engineer is flipping these to
+	 * "auto" one gate at a time as the override data earns it. */
+	autonomy: Record<GateName, AutonomyMode>;
 	agents: SliceFlowAgents;
 	models: SliceFlowModels;
 }
@@ -77,6 +95,7 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	maxCompileRetries: 2,
 	maxArchitectRetries: 2,
 	maxPlanRetries: 2,
+	maxPrototypeRetries: 2,
 	maxLoopIterations: 5,
 	maxFixupsPerSlice: 2,
 	// Budget sized for reverifyAllInLoop=true: each iteration re-runs all five
@@ -86,20 +105,27 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	autoCommit: true,
 	autoApprove: false,
 	gitignoreWorkDir: true,
+	// Every gate starts human-in-the-loop; trust is handed over one gate at a
+	// time. `frame` stays human permanently (it is never auto-approved here).
+	autonomy: { frame: "human", architect: "human", prototype: "human", plan: "human", verify: "human" },
 	// Defaults name slice-flow's own dedicated agents, bundled in
 	// slice-flow/agents/ and installed into .pi/agents/. There is no
 	// generic-builtin fallback: every phase resolves to a slice-flow-<role> agent.
 	agents: {
 		intake: "slice-flow-scout",
 		research: "slice-flow-researcher",
-		attack: "slice-flow-oracle",
+		// The oracle archetype is split in two: an adversary that attacks, and a
+		// judge that weighs and decides. Maximizing breakage and deciding cleanly
+		// are different instincts, and the split gives each its own tunable identity.
+		attack: "slice-flow-oracle-adversary",
 		compile: "slice-flow-scout",
-		frameJudge: "slice-flow-oracle",
+		frameJudge: "slice-flow-oracle-judge",
 		hypothesis: "slice-flow-scout",
-		architectJudge: "slice-flow-oracle",
+		architectJudge: "slice-flow-oracle-judge",
 		prototype: "slice-flow-builder",
-		prototypeJudge: "slice-flow-oracle",
+		prototypeJudge: "slice-flow-oracle-judge",
 		plan: "slice-flow-planner",
+		planJudge: "slice-flow-oracle-judge",
 		build: "slice-flow-builder",
 		review: "slice-flow-reviewer",
 		fixup: "slice-flow-builder",
@@ -119,6 +145,7 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 		prototype: "anthropic/claude-haiku-4-5",
 		prototypeJudge: "anthropic/claude-opus-4-8",
 		plan: null,
+		planJudge: "anthropic/claude-opus-4-8",
 		build: null,
 		review: null,
 		// Fix-ups resolve blocker/major findings — the riskiest edits in the
