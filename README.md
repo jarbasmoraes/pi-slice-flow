@@ -189,7 +189,7 @@ session's default model.
   "maxPlanRetries": 2,
   "maxLoopIterations": 5,
   "maxFixupsPerSlice": 2,
-  "loopTokenBudget": 1500000,
+  "loopTokenBudget": 3000000,
   "reverifyAllInLoop": true,
   "autoCommit": true,
   "autoApprove": false,
@@ -222,7 +222,10 @@ Notes:
   on every loop iteration, not only the failed ones, so a loop fix that
   regresses a previously-passing dimension cannot reach `done` on a stale PASS.
   Set it `false` to re-verify only the failed dimensions (cheaper, but a
-  regression in a passing dimension can slip through).
+  regression in a passing dimension can slip through). `loopTokenBudget`
+  defaults to 3M to give this 5×-per-iteration verify cost headroom; the loop
+  clears each re-verified dimension's verdict file first, so a verifier that
+  fails to write keeps the loop going rather than passing on stale evidence.
 - `maxPlanRetries` bounds the automatic replan when the deterministic slice
   lint fails (non-contiguous numbering, missing slice sections, empty
   Scope/Acceptance, or a forward dependency); after the budget the plan is

@@ -46,7 +46,6 @@ export interface State {
 	slices: string[]; // slice file basenames, in order
 	sliceIndex: number;
 	fixupRound: number; // 0 = initial build; 1..maxFixupsPerSlice = fix-up rounds
-	memoRelint: number; // bounded re-runs of the current build/fix-up on a malformed memo
 	loopIteration: number;
 	failedDimensions: VerifyDimension[];
 	tokensSpent: number; // best-effort estimate across all subagent runs
@@ -159,7 +158,6 @@ export function createState(
 		slices: [],
 		sliceIndex: 0,
 		fixupRound: 0,
-		memoRelint: 0,
 		loopIteration: 0,
 		failedDimensions: [],
 		tokensSpent: 0,
@@ -180,7 +178,6 @@ export function loadState(p: Paths): State | null {
 	s.compileRetries = s.compileRetries ?? 0;
 	s.archRetries = s.archRetries ?? 0;
 	s.planRetries = s.planRetries ?? 0;
-	s.memoRelint = s.memoRelint ?? 0;
 	s.archApproved = s.archApproved ?? false;
 	s.archWinner = s.archWinner ?? null;
 	s.codegraphReady = s.codegraphReady ?? false;
@@ -430,14 +427,20 @@ export const SLICE_REQUIRED_SECTIONS = [
 	"## Hints",
 ] as const;
 
-/** Body of a `## Section` heading until the next `## ` (or end of file). */
+/** Body of a `## Section` heading until the next `## ` (or end of file).
+ * Fenced code blocks are transparent: a `## ` line inside ``` ... ``` (a Python
+ * comment, a shell heading, a markdown example) does not end the section, so a
+ * slice whose Scope/Hints contain code is parsed correctly. */
 function sectionBody(text: string, heading: string): string | null {
 	const lines = text.split("\n");
 	const start = lines.findIndex((l) => l.trim().toLowerCase().startsWith(heading.toLowerCase()));
 	if (start === -1) return null;
 	const rest: string[] = [];
+	let inFence = false;
 	for (let i = start + 1; i < lines.length; i++) {
-		if (/^##\s/.test(lines[i].trim())) break;
+		const t = lines[i].trim();
+		if (/^```/.test(t)) inFence = !inFence;
+		if (!inFence && /^##\s/.test(t)) break;
 		rest.push(lines[i]);
 	}
 	return rest.join("\n");
@@ -478,10 +481,13 @@ export function lintSlices(p: Paths): FrameLint {
 		if (!hasChecklistItem(sectionBody(text, "## Acceptance criteria"))) findings.push(`${file}: "## Acceptance criteria" has no items`);
 
 		const deps = sectionBody(text, "## Depends on");
-		if (deps !== null) {
-			const depNums = [...deps.matchAll(/\b0*(\d{1,3})\b/g)].map((m) => Number(m[1]));
-			const isNone = /\bnone\b/i.test(deps);
-			if (num === 1 && !isNone && depNums.length > 0) {
+		if (deps !== null && !/\bnone\b/i.test(deps)) {
+			// Slice ids are zero-padded 3-digit (NNN-<slug>), so match only that
+			// form. Bare prose cardinals ("see issue 42", "the 3 helpers", "v3")
+			// are not slice references and must not trip a false forward-dep that
+			// would burn the replan budget on a valid plan.
+			const depNums = [...deps.matchAll(/\b(\d{3})\b/g)].map((m) => Number(m[1]));
+			if (num === 1 && depNums.length > 0) {
 				findings.push(`${file}: slice 001 must depend on "none" (found ${depNums.map(pad3).join(", ")})`);
 			}
 			for (const d of depNums) {

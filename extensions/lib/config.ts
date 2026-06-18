@@ -79,7 +79,9 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	maxPlanRetries: 2,
 	maxLoopIterations: 5,
 	maxFixupsPerSlice: 2,
-	loopTokenBudget: 1_500_000,
+	// Budget sized for reverifyAllInLoop=true: each iteration re-runs all five
+	// verifiers (strong tier), so ~5 dims × several iterations needs headroom.
+	loopTokenBudget: 3_000_000,
 	reverifyAllInLoop: true,
 	autoCommit: true,
 	autoApprove: false,

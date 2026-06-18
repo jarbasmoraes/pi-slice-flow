@@ -486,6 +486,10 @@ async function onPlan(env: Env): Promise<string> {
 		state.planRetries += 1;
 		const notes = lint.findings.map((f) => `lint: ${f}`).join("\n");
 		logEvent(state, `slice lint failed -> replan ${state.planRetries}/${cfg.maxPlanRetries}`);
+		// Clear the rejected slice files first so a replan that writes fewer or
+		// renamed slices cannot leave orphans that pass the next lint and get
+		// built from a discarded plan (the invariant onArchitect also upholds).
+		removeFiles(listSliceFiles(p).map((f) => join(p.slices, f)));
 		return issue(p, state, planDirective(p, state, cfg, notes), `Plan failed slice lint. Replanning (retry ${state.planRetries}/${cfg.maxPlanRetries}).`);
 	}
 	if (!lint.ok) logEvent(state, "slice lint still failing after max replans -> surfacing to gate");
@@ -497,6 +501,7 @@ async function onPlan(env: Env): Promise<string> {
 		`${p.plan} and ${p.slices}/`,
 		(notes) => {
 			state.planRetries = 0; // a human revise reopens the bounded lint-replan budget
+			removeFiles(listSliceFiles(p).map((f) => join(p.slices, f))); // discard the rejected slices before re-planning
 			return planDirective(p, state, cfg, notes);
 		},
 	);
@@ -504,7 +509,6 @@ async function onPlan(env: Env): Promise<string> {
 	state.slices = sliceFiles;
 	state.sliceIndex = 0;
 	state.fixupRound = 0;
-	state.memoRelint = 0;
 	state.phase = "implement";
 	logEvent(state, `plan approved with ${sliceFiles.length} slices`);
 	return issue(p, state, buildDirective(p, state, cfg), `Plan approved: ${sliceFiles.length} slices.`);
@@ -516,18 +520,14 @@ async function onSliceReviewed(env: Env): Promise<string> {
 	const a = sliceArtifacts(p, state);
 	if (!nonEmpty(a.memoPath)) return reissue(env, `Memo ${a.memoPath} missing — the builder did not complete its contract`);
 
-	// Deterministic memo-format lint: the memo is load-bearing for every later
-	// builder, so a malformed one buys one bounded re-run of the same build/
-	// fix-up before we trust the review. A lying (vs malformed) memo remains the
-	// reviewer's job per reviewer-solid.
+	// Deterministic memo-format lint, logged as a signal only. The memo is
+	// load-bearing for later builders, but re-running the whole build to fix a
+	// heading is disproportionate (it risks duplicate commits and duplicate
+	// fix-up sections), so a malformed memo is surfaced to the event log and the
+	// reviewer (reviewer-solid already blocks a memo that lies) rather than
+	// triggering a rebuild.
 	const memoLint = lintMemo(a.memoPath, cfg.autoCommit);
-	if (!memoLint.ok && state.memoRelint < 1) {
-		state.memoRelint += 1;
-		logEvent(state, `${a.sliceId} memo lint failed -> re-run (${memoLint.findings.join("; ")})`);
-		const redo = state.fixupRound > 0 ? fixupDirective(p, state, cfg) : buildDirective(p, state, cfg);
-		return issue(p, state, redo, `Memo failed format lint: ${memoLint.findings.join("; ")}. Re-running ${a.sliceId} so the memo is well-formed.`);
-	}
-	state.memoRelint = 0;
+	if (!memoLint.ok) logEvent(state, `${a.sliceId} memo format lint: ${memoLint.findings.join("; ")}`);
 	const verdict = verdictOf(a.reviewPath);
 	if (verdict === null) return reissue(env, `Review verdict missing or malformed in ${a.reviewPath}`);
 
@@ -556,7 +556,6 @@ async function onSliceReviewed(env: Env): Promise<string> {
 	// Advance to the next slice or to verification.
 	state.sliceIndex += 1;
 	state.fixupRound = 0;
-	state.memoRelint = 0;
 	if (state.sliceIndex < state.slices.length) {
 		return issue(p, state, buildDirective(p, state, cfg), `${a.sliceId} complete.`);
 	}
@@ -614,6 +613,12 @@ async function onVerified(env: Env): Promise<string> {
 	}
 	state.loopIteration += 1;
 	logEvent(state, `loop iteration ${state.loopIteration}: FAIL on ${failed.join(", ")}`);
+	// Clear the verdict files for every dimension the upcoming loop will
+	// re-verify, so a verifier that crashes or returns nothing leaves the file
+	// absent (read as a failure that keeps looping) instead of leaving a stale
+	// PASS that could let onVerified declare `done` on pre-fix evidence.
+	const reVerifyDims = cfg.reverifyAllInLoop ? VERIFY_DIMENSIONS : failed;
+	removeFiles(reVerifyDims.map((dim) => join(p.verify, `${dim}.md`)));
 	return issue(
 		p,
 		state,
