@@ -50,7 +50,7 @@ export interface State {
 	tokensSpent: number; // best-effort estimate across all subagent runs
 	loopStartTokens: number;
 	seq: number;
-	codegraphReady: boolean; // graph.db present at start; gates later codegraph skill injection
+	codegraphReady: boolean; // a .codegraph/*.db index present at start; gates later codegraph skill injection
 	log: Array<{ ts: string; event: string }>;
 	isolation?: { worktree?: WorktreeInfo; disposition?: string };
 }
