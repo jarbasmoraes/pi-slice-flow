@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GateName, SliceFlowConfig } from "./config.ts";
 import {
+	REFLECT_RUBRICS,
 	archAttackDirective,
 	architectDirective,
 	architectJudgeDirective,
@@ -24,9 +25,12 @@ import {
 	planDirective,
 	prototypeDirective,
 	prototypeJudgeDirective,
+	reflectDirective,
 	researchDirective,
 	verifyDirective,
 } from "./directives.ts";
+import { computeTaskMetrics, gatherOverrideCases } from "./metrics.ts";
+import type { OverrideCase } from "./metrics.ts";
 import { codegraphPreamble } from "./codegraph.ts";
 import type { CodegraphState } from "./codegraph.ts";
 import { PAUSE_MSG, askUiShape, gate } from "./gates.ts";
@@ -34,6 +38,7 @@ import type { GateContext } from "./gates.ts";
 import {
 	VERIFY_DIMENSIONS,
 	createState,
+	ensureReflectTree,
 	ensureWorkTree,
 	hypothesisPaths,
 	archAttackMarkerOf,
@@ -44,17 +49,22 @@ import {
 	lintPrototype,
 	lintSlices,
 	listSliceFiles,
+	listTasks,
+	loadState,
 	prototypeWinnerOf,
 	logEvent,
 	nonEmpty,
 	readVerifyVerdicts,
+	reflectPaths,
 	removeFiles,
 	saveState,
 	sliceArtifacts,
+	taskVerdictSummary,
 	verdictOf,
 	winnerOf,
+	workPaths,
 } from "./workspace.ts";
-import type { Directive, Paths, State } from "./workspace.ts";
+import type { Directive, Paths, ReflectPaths, State } from "./workspace.ts";
 import { createWorktree, repoRootOf, removeWorktree, validateWorktree } from "./worktree.ts";
 import type { Exec, WorktreeInfo } from "./worktree.ts";
 
@@ -806,6 +816,145 @@ export function preflightAgents(cwd: string, cfg: SliceFlowConfig): void {
 				`installed into .pi/agents/ — re-run the package install/sync.`,
 		);
 	}
+}
+
+// --- Self-improvement: reflect on judge rubrics from override cases (T3b) -----
+
+/** The on-disk artifacts a given gate's judge produced, so the reflection agent
+ * can read the actual documents the human overrode (not just the counts). */
+function gateArtifacts(p: Paths, gate: string): string[] {
+	switch (gate) {
+		case "architect":
+			return [p.architecture, p.archDispositions];
+		case "prototype":
+			return [join(p.prototypes, "JUDGEMENT.md")];
+		case "plan":
+			return [p.plan, p.planJudgement];
+		case "verify":
+			return [`${p.verify}/`];
+		default:
+			return [];
+	}
+}
+
+/** Compile the override cases for one judge into a human- and agent-readable
+ * markdown file: per overriding task, the gate decision counts, the override
+ * rate, and pointers to the artifacts the judge produced so the reflection
+ * agent can inspect what the human disagreed with. Pure formatting over the
+ * gathered cases plus per-task paths. */
+function renderCasesFile(cwd: string, cfg: SliceFlowConfig, gate: string, cases: OverrideCase[]): string {
+	const lines = [`# Override cases — ${gate} gate`, ""];
+	if (cases.length === 0) {
+		lines.push(`No human-override cases recorded for the ${gate} gate across the tasks under ${cfg.workDir}/.`);
+		lines.push("");
+		lines.push("There is no disagreement signal to learn from yet; no rubric edits should be proposed.");
+		return lines.join("\n");
+	}
+	lines.push(`${cases.length} task(s) where a human did not accept the judged artifact as-is. For each, read the listed artifacts and compare the judge's verdict against the human's decision.`);
+	lines.push("");
+	for (const c of cases) {
+		const p = workPaths(cwd, cfg.workDir, c.slug);
+		lines.push(`## ${c.slug}`);
+		lines.push("");
+		lines.push(`- decisions: approve=${c.approve}, revise=${c.revise}, abort=${c.abort}, pause=${c.pause}`);
+		lines.push(`- override rate: ${(c.overrideRate * 100).toFixed(0)}%`);
+		lines.push(`- artifacts the judge produced:`);
+		for (const a of gateArtifacts(p, gate)) lines.push(`  - ${a}`);
+		const overrideEvents = overrideLogLines(cwd, cfg, c.slug, gate).map((e) => `  - ${e}`);
+		if (overrideEvents.length > 0) {
+			lines.push(`- relevant log events:`);
+			lines.push(...overrideEvents);
+		}
+		lines.push("");
+	}
+	return lines.join("\n");
+}
+
+/** Log lines for a task that bear on the given gate's override decision. */
+function overrideLogLines(cwd: string, cfg: SliceFlowConfig, slug: string, gate: string): string[] {
+	const p = workPaths(cwd, cfg.workDir, slug);
+	const state = loadState(p);
+	if (!state) return [];
+	return state.log
+		.map((e) => e.event)
+		.filter((e) => e.includes(`gate ${gate}:`) || e.startsWith(`${gate} revision`) || (gate === "frame" && e.startsWith("frame gate:")));
+}
+
+/**
+ * Cross-run self-improvement entry point: for the requested judge (or all
+ * judges with a tunable rubric), mine the human-override cases from every task
+ * via the T3a metrics, write them to reflect/<judge>-cases.md, and return the
+ * subagent directives that spawn a fresh oracle-judge to propose rubric edits
+ * into reflect/<judge>-proposals.md. Read-only over task state; it writes only
+ * under the reflect workdir and proposes diffs — it edits no skill or source.
+ */
+export function startReflect(cwd: string, cfg: SliceFlowConfig, judge?: string): string {
+	const judges = judge ? [judge] : Object.keys(REFLECT_RUBRICS);
+	for (const j of judges) {
+		if (!REFLECT_RUBRICS[j]) throw new Error(`Unknown reflect judge "${j}". Known: ${Object.keys(REFLECT_RUBRICS).join(", ")}.`);
+	}
+	const r: ReflectPaths = reflectPaths(cwd, cfg.workDir);
+	ensureReflectTree(r);
+	const tasks = listTasks(cwd, cfg.workDir);
+	const metrics = tasks.map((t) => computeTaskMetrics(t.state, taskVerdictSummary(workPaths(cwd, cfg.workDir, t.slug))));
+
+	const directives: Directive[] = [];
+	const empty: string[] = [];
+	let seq = 1;
+	for (const j of judges) {
+		const cases = gatherOverrideCases(metrics, j);
+		writeFileSync(r.casesOf(j), renderCasesFile(cwd, cfg, j, cases), "utf8");
+		if (cases.length === 0) {
+			empty.push(j);
+			continue;
+		}
+		const d = reflectDirective(r, cfg, j, seq);
+		seq += 1;
+		logDirectiveTo(r, d);
+		directives.push(d);
+	}
+
+	if (directives.length === 0) {
+		return [
+			`No human-override cases were found for: ${judges.join(", ")}.`,
+			`Compiled (empty) case files are under ${r.root}/. There is no disagreement signal to learn from yet, so no reflection was spawned.`,
+			"A gate earns a rubric proposal only once a human has overridden its judge at least once. Tell the user and end your turn.",
+		].join("\n");
+	}
+
+	const blocks = directives.map((d) =>
+		[
+			`### ${d.label}`,
+			"",
+			"Invoke the `subagent` tool with EXACTLY this input (do not modify any field):",
+			"",
+			"```json",
+			JSON.stringify(d.args, null, 2),
+			"```",
+			`Proposals will be written to ${(d.expects ?? [])[0]} for human review.`,
+		].join("\n"),
+	);
+
+	return [
+		`## Reflection — proposing rubric edits from override cases`,
+		"",
+		`Override cases compiled under ${r.root}/. Run the ${directives.length} reflection agent(s) below.` +
+			(empty.length ? ` (No override cases for: ${empty.join(", ")} — skipped.)` : ""),
+		"",
+		...blocks,
+		"",
+		"These agents PROPOSE rubric edits only; nothing is applied automatically. When they finish, read each proposals file and relay the suggested diffs to the user for review and manual application. Then end your turn.",
+	].join("\n");
+}
+
+/** Log a reflect directive under the reflect workdir for inspectability
+ * (mirrors logDirective, which is task-scoped). */
+function logDirectiveTo(r: ReflectPaths, directive: Directive): void {
+	writeFileSync(
+		join(r.logs, `${String(directive.seq).padStart(3, "0")}-directive-${directive.kind}-${directive.label.replace(/[^a-z0-9]+/gi, "-")}.json`),
+		JSON.stringify({ ts: new Date().toISOString(), ...directive }, null, 2),
+		"utf8",
+	);
 }
 
 export function startWorkflow(

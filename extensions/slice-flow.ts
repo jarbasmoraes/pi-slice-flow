@@ -26,8 +26,10 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { loadConfig } from "./lib/config.ts";
 import type { SliceFlowConfig } from "./lib/config.ts";
-import { converge, nextStep, setupWorktree, startAttack, startResearch, startWorkflow, stopped } from "./lib/engine.ts";
+import { converge, nextStep, setupWorktree, startAttack, startReflect, startResearch, startWorkflow, stopped } from "./lib/engine.ts";
 import { detectCodegraph } from "./lib/codegraph.ts";
+import { REFLECT_RUBRICS } from "./lib/directives.ts";
+import { aggregate, computeTaskMetrics, renderReport } from "./lib/metrics.ts";
 import {
 	allocateSlug,
 	ensureGitignored,
@@ -40,6 +42,7 @@ import {
 	observeSubagentResult,
 	resolveActiveTask,
 	statusSummary,
+	taskVerdictSummary,
 	workPaths,
 } from "./lib/workspace.ts";
 import type { Paths, State } from "./lib/workspace.ts";
@@ -91,6 +94,8 @@ export default function (pi: ExtensionAPI) {
 			"Actions: 'start' (requires description) begins a new task and returns its slug; 'next' validates the last step, runs approval gates, and returns the next directive; " +
 			"'status' reports state; 'abort' stops the task. During frame exploration only: 'research' (requires questions) fans out web researchers, " +
 			"'attack' spawns fresh adversaries against the draft framing, 'converge' compiles the decision ledger into the frame document. " +
+			"Cross-run, read-only: 'metrics' aggregates per-gate override rates, retries, and token spend across all tasks; " +
+			"'reflect' spawns a fresh judge to propose rubric-skill edits from real human-override cases (proposals only, never auto-applied). " +
 			"Pass 'slug' to target a specific task; it is required only when more than one task is active. " +
 			"Directives contain exact `subagent` tool arguments that MUST be invoked verbatim.",
 		promptSnippet: "Drive the slice-flow feature workflow (start/next/status/abort; research/attack/converge during frame exploration)",
@@ -100,7 +105,7 @@ export default function (pi: ExtensionAPI) {
 			"During the frame explore stage you act as the framing partner (framing-partner skill): converse with the user, maintain the decision ledger, and use the research/attack/converge actions.",
 		],
 		parameters: Type.Object({
-			action: StringEnum(["start", "next", "status", "abort", "research", "attack", "converge"] as const),
+			action: StringEnum(["start", "next", "status", "abort", "research", "attack", "converge", "metrics", "reflect"] as const),
 			description: Type.Optional(Type.String({ description: "Feature description (required for action 'start')" })),
 			slug: Type.Optional(
 				Type.String({ description: "Task folder to target (.pi/task/<slug>/). Required when more than one task is active; ignored by 'start'." }),
@@ -109,6 +114,9 @@ export default function (pi: ExtensionAPI) {
 				Type.Array(Type.String(), { description: "Research questions, one per researcher agent (required for action 'research')" }),
 			),
 			note: Type.Optional(Type.String({ description: "Optional context to record in the workflow log" })),
+			judge: Type.Optional(
+				Type.String({ description: `Gate/judge to reflect on for action 'reflect' (one of ${Object.keys(REFLECT_RUBRICS).join(", ")}); omit to reflect on all.` }),
+			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			// `start` allocates a brand-new slug folder, so it never resolves an
@@ -124,6 +132,25 @@ export default function (pi: ExtensionAPI) {
 				const isolation = await setupWorktree(ctx, (c, a, o) => pi.exec(c, a, o), cfg, ctx.cwd, slug, baseline);
 				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, codegraphState, isolation);
 				return { content: [{ type: "text", text }], details: { phase: "frame", slug } };
+			}
+
+			// Cross-run actions aggregate over every task, so they bypass openTask
+			// (which targets a single task and throws when several are active).
+			if (params.action === "metrics") {
+				const cfg = loadConfig(ctx.cwd);
+				const tasks = listTasks(ctx.cwd, cfg.workDir);
+				const perTask = tasks.map((t) => {
+					const p = workPaths(ctx.cwd, cfg.workDir, t.slug);
+					return computeTaskMetrics(t.state, taskVerdictSummary(p));
+				});
+				const report = renderReport(aggregate(perTask), perTask);
+				return { content: [{ type: "text", text: report }], details: { tasks: tasks.map((t) => t.slug) } };
+			}
+
+			if (params.action === "reflect") {
+				const cfg = loadConfig(ctx.cwd);
+				const text = startReflect(ctx.cwd, cfg, params.judge);
+				return { content: [{ type: "text", text }], details: { judge: params.judge ?? "all" } };
 			}
 
 			const noTaskHint = "No slice-flow task here. Start one with /feature <description>.";
