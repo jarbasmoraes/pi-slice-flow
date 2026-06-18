@@ -53,6 +53,7 @@ old `.pi/agents/slice-<role>.md` files from prior versions are superseded by the
 | `/feature <description>` | Starts the workflow (prompt template). |
 | `/feature-status` | Shows current phase, slice, loop iteration, token estimate. |
 | `/feature-resume` | Continues from persisted state after a restart or `/reload`. |
+| `/feature-reflect [judge]` | Proposes rubric-skill edits from real human-override cases (proposals only; nothing auto-applied). |
 
 The parent agent only relays: it calls `slice_flow`, receives a directive with
 exact `subagent` arguments, invokes them verbatim, and calls
@@ -61,6 +62,37 @@ anything itself — with one exception: during the frame **explore** stage it
 becomes the user's framing partner (framing-partner skill) and drives the
 `research` / `attack` / `converge` actions, but still writes no project code
 and no frame document.
+
+## Observability and self-improvement (cross-run)
+
+Two read-only/proposal-only `slice_flow` actions turn the per-task logs that
+already exist into the trust signal that decides whether a gate has earned
+`autonomy: "auto"`. Neither changes any gate/judge workflow behavior.
+
+- **`slice_flow({"action":"metrics"})`** — strictly read-only. Aggregates
+  across every task under `workDir` (via `listTasks`) and prints a markdown
+  report: per gate (`frame`/`architect`/`prototype`/`plan`/`verify`), the
+  approve/revise/abort/pause counts and the **override rate**
+  `(revise + abort) / total decisions` — the fraction of times a human did not
+  accept the judged artifact as-is — plus retry tallies (recompile, re-judge,
+  RECONSIDER, replan, fix-up, loop) and per-task token spend. A gate the human
+  accepted as-is across many runs is a candidate to flip to `"auto"`; one the
+  human keeps overriding is not. Mutates nothing.
+- **`slice_flow({"action":"reflect"[,"judge":"plan"]})`** and the
+  **`/feature-reflect [judge]`** command — the self-improving loop. It mines
+  the human-override cases for a judge (or every judge with a tunable rubric:
+  `architect` → `architecture-attack`, `prototype` → `prototype-rubric`,
+  `plan` → `plan-rubric`, `verify` → `verify-rubrics`), compiles them into
+  `<workDir>/reflect/<judge>-cases.md`, and spawns a fresh-context
+  `slice-flow-oracle-judge` (the rubric skill injected, briefs-as-files) that
+  proposes unified-diff-style rubric edits with a rationale per edit into
+  `<workDir>/reflect/<judge>-proposals.md`. The proposals are written **for
+  human review and applied automatically by nothing** — the reflection agent is
+  forbidden from editing the skill or any source file, the same way a gate
+  earns `"auto"` only through human trust. `frame` has no tunable rubric (it is
+  human-pinned), so it is excluded from reflection. When a judge has no override
+  cases yet, an empty case file is written and no agent is spawned: a gate earns
+  a rubric proposal only once a human has overridden its judge at least once.
 
 ## Phase flow
 
@@ -159,6 +191,17 @@ feature-work/
 │   ├── NNN-directive-*.json  # the exact subagent args issued
 │   └── calls/                # every actual subagent tool invocation observed
 └── REPORT.md             # written only when phase 6 breaches its limits
+```
+
+The cross-run self-improvement action writes beside the task folders, not
+inside any one task:
+
+```
+feature-work/reflect/      # /feature-reflect output (cross-run; never auto-applied)
+├── <judge>-cases.md       # compiled human-override cases mined from every task
+├── <judge>-proposals.md   # the reflection agent's proposed rubric diffs (for human review)
+├── logs/                  # the reflection agent's brief + directive JSON
+└── chains/                # pi-subagents chain artifacts
 ```
 
 Every spawned agent's full prompt is inspectable: briefs are written to
@@ -321,7 +364,8 @@ The extension is split by responsibility; each module has one reason to change:
 | `extensions/lib/briefs.ts` | every spawned agent's prompt text (pure strings) | you want agents briefed differently |
 | `extensions/lib/directives.ts` | exact `subagent` args; fresh/clarify/chainDir envelope | the pi-subagents call shape changes |
 | `extensions/lib/gates.ts` | TUI approval gates (narrow `GateContext`) | the approval UX changes |
-| `extensions/lib/engine.ts` | the phase state machine | phase order/transitions change |
+| `extensions/lib/metrics.ts` | pure cross-run analysis: per-gate override rates, retries, token spend | you change the observability report |
+| `extensions/lib/engine.ts` | the phase state machine + cross-run reflect entry point | phase order/transitions change |
 
 `npm run check` typechecks against a locally installed pi-coding-agent
 (adjust the absolute paths in `tsconfig.check.json` for your machine).

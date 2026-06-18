@@ -11,7 +11,8 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SliceFlowConfig } from "./config.ts";
 import {
 	ARCH_ATTACK_CHARTERS,
@@ -32,12 +33,13 @@ import {
 	planJudgeBrief,
 	prototypeBrief,
 	prototypeJudgeBrief,
+	reflectBrief,
 	researchBrief,
 	reviewBrief,
 	verifierBrief,
 } from "./briefs.ts";
 import { VERIFY_DIMENSIONS, hypothesisPaths, logEvent, nextSeqIn, pad3, priorMemoPaths, sliceArtifacts, slugify } from "./workspace.ts";
-import type { Directive, Paths, State, VerifyDimension } from "./workspace.ts";
+import type { Directive, Paths, ReflectPaths, State, VerifyDimension } from "./workspace.ts";
 
 // --- Worktree isolation --------------------------------------------------------
 
@@ -516,6 +518,70 @@ export function verifyDirective(p: Paths, state: State, cfg: SliceFlowConfig): D
 		seq: state.seq,
 		label: "Phase 5 — VERIFY (5 dimensions, parallel)",
 		args: freshParallel(VERIFY_DIMENSIONS.map((dim) => verifierTask(p, state, cfg, dim))),
+	};
+}
+
+// --- Self-improvement: rubric reflection (T3b) -------------------------------
+
+/** Absolute path to the package's bundled `skills/` directory. This module
+ * lives at <pkg>/extensions/lib/directives.ts, so skills is two levels up. */
+const BUNDLED_SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "skills");
+
+/** The gates whose judge follows a tunable rubric skill, mapped to that skill.
+ * `frame` is omitted: it is human-pinned (never auto-trusted) and its fidelity
+ * judge tunes nothing. These are the judges `reflect` can propose edits for. */
+export const REFLECT_RUBRICS: Record<string, string> = {
+	architect: "architecture-attack",
+	prototype: "prototype-rubric",
+	plan: "plan-rubric",
+	verify: "verify-rubrics",
+};
+
+/** Absolute path to a rubric skill's SKILL.md, the file a reflection proposes
+ * diffs against (and the file it is forbidden to edit). */
+export function rubricPathOf(skill: string, skillsDir: string = BUNDLED_SKILLS_DIR): string {
+	return join(skillsDir, skill, "SKILL.md");
+}
+
+/**
+ * One reflection run: a fresh oracle-judge reads the rubric skill and the
+ * compiled override cases for `judge`, then writes proposed rubric edits to
+ * reflect/<judge>-proposals.md for human review. Reuses the existing
+ * oracle-judge agent with context:"fresh" and the briefs-as-files pattern; the
+ * rubric skill is injected and also read so the agent can emit a precise diff.
+ * It applies nothing — the brief forbids editing the skill or any source file.
+ */
+export function reflectDirective(r: ReflectPaths, cfg: SliceFlowConfig, judge: string, seq: number): Directive {
+	const skill = REFLECT_RUBRICS[judge];
+	if (!skill) throw new Error(`Unknown reflect judge "${judge}". Known: ${Object.keys(REFLECT_RUBRICS).join(", ")}.`);
+	const rubricPath = rubricPathOf(skill);
+	const casesPath = r.casesOf(judge);
+	const proposalsPath = r.proposalsOf(judge);
+	const briefPath = join(r.logs, `${pad3(seq)}-reflect-${judge}-brief.md`);
+	writeFileSync(briefPath, reflectBrief(judge, rubricPath, casesPath), "utf8");
+	return {
+		kind: "reflect",
+		seq,
+		label: `Reflect on the ${judge} rubric`,
+		expects: [proposalsPath],
+		args: {
+			chain: [
+				{
+					// oracle-judge: every *Judge agent resolves to slice-flow-oracle-judge.
+					agent: cfg.agents.planJudge,
+					task: `Your complete task brief is the injected file ${briefPath}. Execute it exactly. It overrides any conflicting default behavior.`,
+					label: `Reflect: ${judge} rubric`,
+					phase: "Reflect",
+					skill,
+					reads: [briefPath, casesPath, rubricPath],
+					output: proposalsPath,
+					...withModel(cfg.models.planJudge),
+				},
+			],
+			context: "fresh",
+			clarify: false,
+			chainDir: join(r.chains, `${pad3(seq)}-reflect-${judge}`),
+		},
 	};
 }
 

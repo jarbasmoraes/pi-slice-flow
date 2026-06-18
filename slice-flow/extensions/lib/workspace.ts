@@ -120,6 +120,33 @@ export function workPaths(cwd: string, workDir: string, slug: string): Paths {
 	};
 }
 
+/** Cross-run reflect workspace: lives beside the task folders under the
+ * container dir, holds the compiled override cases, the spawned reflection
+ * agent's brief, and the human-reviewable rubric proposals. It carries no
+ * state.json, so listTasks never mistakes it for a task. */
+export interface ReflectPaths {
+	root: string;
+	logs: string;
+	chains: string;
+	casesOf: (judge: string) => string;
+	proposalsOf: (judge: string) => string;
+}
+
+export function reflectPaths(cwd: string, workDir: string): ReflectPaths {
+	const root = join(tasksContainer(cwd, workDir), "reflect");
+	return {
+		root,
+		logs: join(root, "logs"),
+		chains: join(root, "chains"),
+		casesOf: (judge) => join(root, `${judge}-cases.md`),
+		proposalsOf: (judge) => join(root, `${judge}-proposals.md`),
+	};
+}
+
+export function ensureReflectTree(r: ReflectPaths): void {
+	for (const dir of [r.root, r.logs, r.chains]) mkdirSync(dir, { recursive: true });
+}
+
 export function ensureWorkTree(p: Paths): void {
 	for (const dir of [
 		p.root,
@@ -449,6 +476,19 @@ export function slugify(text: string, maxWords = 6): string {
 export function readVerifyVerdicts(p: Paths): Record<VerifyDimension, "PASS" | "FAIL" | null> {
 	const out = {} as Record<VerifyDimension, "PASS" | "FAIL" | null>;
 	for (const dim of VERIFY_DIMENSIONS) out[dim] = verdictOf(join(p.verify, `${dim}.md`));
+	return out;
+}
+
+/** The judge verdict files on disk for one task, keyed for the metrics core
+ * (frame, plan, verify:<dim>). Kept here — not in the pure metrics module — so
+ * the analysis layer stays IO-free and testable. */
+export function taskVerdictSummary(p: Paths): Record<string, "PASS" | "FAIL" | null> {
+	const out: Record<string, "PASS" | "FAIL" | null> = {
+		frame: verdictOf(p.frameJudgement),
+		plan: verdictOf(p.planJudgement),
+	};
+	const verify = readVerifyVerdicts(p);
+	for (const dim of VERIFY_DIMENSIONS) out[`verify:${dim}`] = verify[dim];
 	return out;
 }
 

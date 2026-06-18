@@ -337,6 +337,35 @@ After the verdict line, list every finding with: file, line, reason, and severit
 You are read/run-only: never edit or commit.`;
 }
 
+/**
+ * Brief for the self-improvement reflection agent (T3b). A fresh judge reads
+ * the rubric skill it would tune and a compiled set of human-override cases
+ * (the judge passed an artifact, then the human revised/aborted it — or the
+ * inverse) and proposes unified-diff-style rubric edits, each with a rationale.
+ * It is PROPOSALS ONLY: it must never edit the skill file or any source file —
+ * a human reviews and applies, matching the "earn trust" principle. Pure
+ * string: it names the rubric path and the cases path and forbids direct edits.
+ */
+export function reflectBrief(judgeId: string, rubricPath: string, casesPath: string): string {
+	return `# Reflect on the "${judgeId}" judge rubric
+
+You are a fresh-context judge asked to IMPROVE a rubric, not to apply it. Two files are injected:
+
+1. The rubric skill you would tune: ${rubricPath}. This is the rubric the "${judgeId}" gate's judge currently follows.
+2. The override cases: ${casesPath}. Each case is a run where a human did NOT accept the judged artifact as-is (a revise/abort after the judge passed it, or the inverse). That disagreement is the training signal — the rubric missed something the human cared about, or flagged something the human did not.
+
+Your task: study the override cases against the current rubric and propose concrete edits to the rubric that would have better predicted the human's decision.
+
+Hard rules:
+- Output PROPOSALS ONLY. You MUST NOT edit ${rubricPath}, any skill file, or any source file. Write nothing to disk yourself except your final answer.
+- Express every proposed change as a unified-diff-style hunk against ${rubricPath} (in a \`\`\`diff fenced block, with - / + lines), so a human can review and apply it deliberately.
+- For EACH proposed edit, give a one- to three-sentence rationale that cites the specific override case(s) it is derived from.
+- Propose nothing the cases do not support. If the cases show no rubric gap, say so in one line and propose no edits — an unsupported "improvement" is noise.
+- Do not invent cases or human intent beyond what ${casesPath} records.
+
+Your final answer is the proposals document; it is saved automatically for human review. Apply nothing.`;
+}
+
 export function loopFixBrief(p: Paths, dim: VerifyDimension, loopIteration: number, autoCommit: boolean): string {
 	return `# Loop fix-up: ${dim} (iteration ${loopIteration})
 
