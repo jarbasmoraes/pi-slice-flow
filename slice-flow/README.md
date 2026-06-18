@@ -187,6 +187,7 @@ session's default model.
   "maxCompileRetries": 2,
   "maxArchitectRetries": 2,
   "maxPlanRetries": 2,
+  "maxPrototypeRetries": 2,
   "maxLoopIterations": 5,
   "maxFixupsPerSlice": 2,
   "loopTokenBudget": 3000000,
@@ -194,6 +195,13 @@ session's default model.
   "autoCommit": true,
   "autoApprove": false,
   "gitignoreWorkDir": true,
+  "autonomy": {
+    "frame": "human",
+    "architect": "human",
+    "prototype": "human",
+    "plan": "human",
+    "verify": "human"
+  },
   "models": {
     "intake": "anthropic/claude-haiku-4-5",
     "research": "anthropic/claude-haiku-4-5",
@@ -205,6 +213,7 @@ session's default model.
     "prototype": "anthropic/claude-haiku-4-5",
     "prototypeJudge": "anthropic/claude-opus-4-8",
     "plan": null,
+    "planJudge": "anthropic/claude-opus-4-8",
     "build": null,
     "review": null,
     "fixup": null,
@@ -215,6 +224,23 @@ session's default model.
 
 Notes:
 
+- `autonomy` is the per-gate trust policy on the path to a zero-touch engineer.
+  Each gate is `"human"` (ask) or `"auto"` (trust the phase's own judges and
+  advance without asking, even with a UI present). Every gate defaults to
+  `"human"`; flip them to `"auto"` one at a time as the override data earns it.
+  `frame` is pinned to the human and is never auto-approved by this map
+  (intent is created there, not verified). `autoApprove` remains a separate
+  global fallback: approve gates only when no UI is present.
+- The plan, architecture, and prototype each face a dedicated adversary before
+  their gate: a plan judge (decomposition soundness), an architecture attack
+  panel (wrong-seam / simpler-structure / fights-the-codebase, with
+  dispositions written to `02-architecture-attacks.md`), and a refute-stance
+  prototype judge. Each judge's rubric lives in its own skill
+  (`plan-rubric`, `architecture-attack`, `prototype-rubric`) so it can be
+  tuned independently over time.
+- `maxPrototypeRetries` bounds the judge-only re-run when the prototype
+  judgement fails its lint (missing `WINNER:` marker, or a winner that names a
+  directory with no README).
 - `loopTokenBudget` is enforced best-effort: token use is estimated
   (chars/4) from observed `subagent` tool IO, counted from the moment phase 6
   starts.
@@ -247,9 +273,9 @@ Notes:
 - **Fan-outs use parallel mode**: hypothesis trio and prototype five-way as
   `{ parallel: [...] }` chain groups (judge step follows in the same chain);
   the five verifiers as top-level `tasks: [...]`.
-- **slice-flow ships six dedicated agents** (`slice-flow-scout`,
-  `slice-flow-researcher`, `slice-flow-builder`, `slice-flow-oracle`,
-  `slice-flow-planner`, `slice-flow-reviewer`) bundled in `slice-flow/agents/`
+- **slice-flow ships seven dedicated agents** (`slice-flow-scout`,
+  `slice-flow-researcher`, `slice-flow-builder`, `slice-flow-oracle-adversary`,
+  `slice-flow-oracle-judge`, `slice-flow-planner`, `slice-flow-reviewer`) bundled in `slice-flow/agents/`
   and provisioned into `.pi/agents/` on workflow start, driven with per-call
   `skill`, `reads`, `output` (and `model`) overrides.
 - `context: "fresh"` on every call defeats the `fork` default of

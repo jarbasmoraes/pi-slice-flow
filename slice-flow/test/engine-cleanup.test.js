@@ -42,6 +42,7 @@ function setup(slug) {
 test("a lint-failing plan deletes the rejected slice files before replanning (MAJOR 1)", async () => {
 	const { p, state } = setup("plan-clean");
 	writeFileSync(p.plan, "# Plan\n- slice index: 001, 002\n");
+	writeFileSync(p.planJudgement, "VERDICT: PASS\n"); // judge clean; the lint is what fails
 	writeFileSync(join(p.slices, "001-a.md"), SLICE("none"));
 	writeFileSync(join(p.slices, "002-b.md"), SLICE("003")); // forward dep -> lint fails
 	state.phase = "plan";

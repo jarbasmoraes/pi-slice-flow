@@ -8,8 +8,9 @@
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SliceFlowConfig } from "./config.ts";
+import type { GateName, SliceFlowConfig } from "./config.ts";
 import {
+	archAttackDirective,
 	architectDirective,
 	architectJudgeDirective,
 	attackDirective,
@@ -22,6 +23,7 @@ import {
 	loopDirective,
 	planDirective,
 	prototypeDirective,
+	prototypeJudgeDirective,
 	researchDirective,
 	verifyDirective,
 } from "./directives.ts";
@@ -34,12 +36,15 @@ import {
 	createState,
 	ensureWorkTree,
 	hypothesisPaths,
+	archAttackMarkerOf,
 	intakeMarkerOf,
 	lintArchitecture,
 	lintFrame,
 	lintMemo,
+	lintPrototype,
 	lintSlices,
 	listSliceFiles,
+	prototypeWinnerOf,
 	logEvent,
 	nonEmpty,
 	readVerifyVerdicts,
@@ -194,8 +199,11 @@ function reissue(env: Env, missing: string): string {
  * response text when the gate ends the turn (pause, abort, or a revision
  * re-issue), or null when approved and the caller should advance the phase.
  */
-async function runGate(env: Env, title: string, artifact: string, onRevise: (notes?: string) => Directive): Promise<string | null> {
-	const g = await gate(env.ctx, env.cfg, title, artifact);
+async function runGate(env: Env, title: string, artifact: string, onRevise: (notes?: string) => Directive, gateId?: GateName, clean = true): Promise<string | null> {
+	const g = await gate(env.ctx, env.cfg, title, artifact, gateId, clean);
+	// Tag the decision with the gate id so T3 can pair judge verdicts against
+	// human overrides per gate and tune each rubric over time.
+	logEvent(env.state, `gate ${gateId ?? env.pending.kind}: ${g.decision}`);
 	if (g.decision === "pause") return PAUSE_MSG(artifact, env.state.slug);
 	if (g.decision === "abort") return stopped(env.p, env.state, `user aborted at ${env.pending.kind} gate`);
 	if (g.decision === "revise") {
@@ -357,7 +365,8 @@ async function onFrameCompiled(env: Env): Promise<string> {
 		!lint.ok || judgeVerdict === "FAIL"
 			? ` WARNING: validation still failing after ${cfg.maxCompileRetries} recompiles (lint: ${lint.ok ? "ok" : lint.findings.length + " findings"}, judge: ${judgeVerdict}; see ${p.frameJudgement}).`
 			: "";
-	const g = await gate(ctx, cfg, `Phase 1 (FRAME) complete — approve the frame?${warn}`, p.frame);
+	const g = await gate(ctx, cfg, `Phase 1 (FRAME) complete — approve the frame?${warn}`, p.frame, "frame", lint.ok && judgeVerdict !== "FAIL");
+	logEvent(state, `gate frame: ${g.decision}`);
 	if (g.decision === "pause") return PAUSE_MSG(p.frame, state.slug);
 	if (g.decision === "abort") return stopped(p, state, "user aborted at frame gate");
 	if (g.decision === "revise") {
@@ -412,17 +421,44 @@ async function onArchitect(env: Env): Promise<string> {
 		logEvent(state, "architecture lint still failing after max re-judges -> surfacing to gate");
 	}
 
-	// 3. Gate, with approval persisted BEFORE the UI question so a dismissed
-	// dialog never forces a second approval of the same document.
+	// 3. Attack the winning design before the gate (once). The judge picked a
+	// winner by comparison; the attack panel tries to break it head-on — the
+	// flaw a comparative judge cannot see because every hypothesis shared it.
+	if (!state.archApproved && !state.archAttacked) {
+		// Clear any prior round's attack reports + dispositions so the panel (and
+		// the disposition step, which enumerates the dir) never reads stale
+		// objections aimed at a superseded winner.
+		const stale = existsSync(p.archAttacks) ? readdirSync(p.archAttacks).map((f) => join(p.archAttacks, f)) : [];
+		removeFiles([...stale, p.archDispositions]);
+		logEvent(state, "architecture drafted -> attack panel");
+		return issue(p, state, archAttackDirective(p, state, cfg), "Architecture drafted. Attacking the winning design before the gate.");
+	}
+	return architectGateAndAdvance(env);
+}
+
+/** The gate + UI-shape + advance tail of phase 2, shared by onArchitect (after
+ * the attack panel ran) and onArchAttacked. Recomputes lint/winner so it can be
+ * entered from either path. */
+async function architectGateAndAdvance(env: Env): Promise<string> {
+	const { ctx, p, cfg, state } = env;
+	const lint = lintArchitecture(p.architecture);
+	const winner = winnerOf(p.architecture);
+	const valid = lint.ok && winner !== null;
+	const marker = archAttackMarkerOf(p.archDispositions);
+
+	// Gate, with approval persisted BEFORE the UI question so a dismissed dialog
+	// never forces a second approval of the same document.
 	if (!state.archApproved) {
-		const warn = !valid
-			? ` WARNING: lint still failing after ${cfg.maxArchitectRetries} re-judges (${lint.findings.length} findings${winner === null ? ", no WINNER marker" : ""}).`
-			: "";
-		const g = await gate(ctx, cfg, `Phase 2 (ARCHITECT) complete — approve the architecture?${warn}`, p.architecture);
+		const warn =
+			(!valid ? ` WARNING: lint still failing after ${cfg.maxArchitectRetries} re-judges (${lint.findings.length} findings${winner === null ? ", no WINNER marker" : ""}).` : "") +
+			(marker === "RECONSIDER" ? ` WARNING: attack panel says RECONSIDER (see ${p.archDispositions}).` : "");
+		const g = await gate(ctx, cfg, `Phase 2 (ARCHITECT) complete — approve the architecture?${warn}`, `${p.architecture} + ${p.archDispositions}`, "architect", valid && marker !== "RECONSIDER");
+		logEvent(state, `gate architect: ${g.decision}`);
 		if (g.decision === "pause") return PAUSE_MSG(p.architecture, state.slug);
 		if (g.decision === "abort") return stopped(p, state, "user aborted at architect gate");
 		if (g.decision === "revise") {
 			state.archRetries = 0;
+			state.archAttacked = false; // re-attack the revised winner
 			logEvent(state, "architect revision requested");
 			// Route the revision to what actually needs to change: the judge's
 			// selection/synthesis (cheap) or the hypothesis designs (full re-run).
@@ -447,7 +483,7 @@ async function onArchitect(env: Env): Promise<string> {
 		saveState(p, state);
 	}
 
-	// 4. UI shape decides whether phase 3 starts with prototypes.
+	// UI shape decides whether phase 3 starts with prototypes.
 	if (state.ui === null) {
 		const shape = await askUiShape(ctx, cfg);
 		if (shape === null) return PAUSE_MSG("the UI question (interactive session required)", state.slug);
@@ -462,12 +498,71 @@ async function onArchitect(env: Env): Promise<string> {
 	return issue(p, state, planDirective(p, state, cfg), "Architecture approved.");
 }
 
+/** The attack panel completed: validate its output, route a RECONSIDER through
+ * a bounded full re-run (regenerate the hypotheses with the attack findings),
+ * then gate. */
+async function onArchAttacked(env: Env): Promise<string> {
+	const { p, cfg, state } = env;
+	const missing = missingExpected(env);
+	if (missing.length > 0) return reissue(env, `Attack panel output missing: ${missing.join(", ")}`);
+	const marker = archAttackMarkerOf(p.archDispositions);
+	if (marker === null) return reissue(env, `Attack disposition marker missing/malformed in ${p.archDispositions}`);
+
+	if (marker === "RECONSIDER" && state.archRetries < cfg.maxArchitectRetries) {
+		state.archRetries += 1;
+		state.archAttacked = false; // re-attack the regenerated winner
+		// Full re-run, not a re-judge: the attack panel exists to catch a flaw the
+		// hypotheses SHARE, and re-selecting among the same three cannot answer
+		// that. Regenerate the hypotheses with the attack findings as notes.
+		removeFiles([...hypothesisPaths(p), p.architecture]);
+		logEvent(state, `arch attack RECONSIDER -> full re-run (regenerate hypotheses) ${state.archRetries}/${cfg.maxArchitectRetries}`);
+		return issue(
+			p,
+			state,
+			architectDirective(p, state, cfg, `The attack panel returned RECONSIDER — full findings in ${p.archDispositions}. Regenerate the hypotheses to answer these objections.`),
+			`Attack panel flagged RECONSIDER. Regenerating hypotheses (retry ${state.archRetries}/${cfg.maxArchitectRetries}).`,
+		);
+	}
+	state.archAttacked = true;
+	logEvent(state, marker === "RECONSIDER" ? "arch attack still RECONSIDER after max re-judges -> surfacing to gate" : "arch attack HOLDS");
+	saveState(p, state);
+	return architectGateAndAdvance(env);
+}
+
 async function onPrototype(env: Env): Promise<string> {
 	const { p, cfg, state } = env;
 	const judgement = join(p.prototypes, "JUDGEMENT.md");
 	if (!nonEmpty(judgement)) return reissue(env, "Prototype judgement missing");
+
+	// Lint the judgement (parseable WINNER naming a real proto dir with a README);
+	// a malformed judgement buys a bounded judge-only re-run over the frozen
+	// prototypes before a human sees it.
+	const lint = lintPrototype(p);
+	if (!lint.ok && state.prototypeRetries < cfg.maxPrototypeRetries) {
+		state.prototypeRetries += 1;
+		const notes = lint.findings.map((f) => `lint: ${f}`).join("\n");
+		logEvent(state, `prototype lint failed -> re-judge ${state.prototypeRetries}/${cfg.maxPrototypeRetries}`);
+		return issue(p, state, prototypeJudgeDirective(p, state, cfg, notes), `Prototype judgement failed lint. Re-judging (retry ${state.prototypeRetries}/${cfg.maxPrototypeRetries}).`);
+	}
+	if (!lint.ok) logEvent(state, "prototype lint still failing after max re-judges -> surfacing to gate");
+
+	// Human gate on the winning UI direction — a removable overlay (autonomy
+	// .prototype) over the refute-stance judge. A revise re-judges with notes.
+	const warn = lint.ok ? "" : ` WARNING: prototype judgement lint failing (${lint.findings.join("; ")}).`;
+	const gated = await runGate(
+		env,
+		`Phase 3a (PROTOTYPE) — approve the winning UI direction?${warn}`,
+		judgement,
+		(notes) => {
+			state.prototypeRetries = 0; // a human revise reopens the bounded re-judge budget
+			return prototypeJudgeDirective(p, state, cfg, notes);
+		},
+		"prototype",
+		lint.ok,
+	);
+	if (gated !== null) return gated;
 	state.phase = "plan";
-	logEvent(state, "prototypes judged");
+	logEvent(state, `prototype winner approved (${prototypeWinnerOf(judgement) ?? "?"})`);
 	return issue(p, state, planDirective(p, state, cfg), `Prototype winner recorded in ${judgement}.`);
 }
 
@@ -478,23 +573,30 @@ async function onPlan(env: Env): Promise<string> {
 		return reissue(env, `Plan or slice files missing (found ${sliceFiles.length} slices in ${p.slices})`);
 	}
 
-	// Deterministic slice lint (numbering, required sections, forward deps) buys
-	// a bounded auto-replan before any human sees the plan — mirrors the frame
-	// recompile loop. Substance is still judged at the human gate below.
+	// Deterministic slice lint (numbering, sections, forward deps) and the
+	// adversarial plan judge (coverage, scope inflation, MVP, arch fidelity)
+	// together gate the plan, buying a bounded auto-replan before any human sees
+	// it — mirrors the frame recompile loop.
 	const lint = lintSlices(p);
-	if (!lint.ok && state.planRetries < cfg.maxPlanRetries) {
+	const judgeVerdict = verdictOf(p.planJudgement);
+	if (judgeVerdict === null) return reissue(env, `Plan judge verdict missing or malformed in ${p.planJudgement}`);
+	const valid = lint.ok && judgeVerdict === "PASS";
+	if (!valid && state.planRetries < cfg.maxPlanRetries) {
 		state.planRetries += 1;
-		const notes = lint.findings.map((f) => `lint: ${f}`).join("\n");
-		logEvent(state, `slice lint failed -> replan ${state.planRetries}/${cfg.maxPlanRetries}`);
+		const notes = [
+			...lint.findings.map((f) => `lint: ${f}`),
+			...(judgeVerdict === "FAIL" ? [`plan judge FAILED — full findings in ${p.planJudgement}`] : []),
+		].join("\n");
+		logEvent(state, `plan validation failed (lint ${lint.ok ? "ok" : "fail"}, judge ${judgeVerdict}) -> replan ${state.planRetries}/${cfg.maxPlanRetries}`);
 		// Clear the rejected slice files first so a replan that writes fewer or
 		// renamed slices cannot leave orphans that pass the next lint and get
 		// built from a discarded plan (the invariant onArchitect also upholds).
 		removeFiles(listSliceFiles(p).map((f) => join(p.slices, f)));
-		return issue(p, state, planDirective(p, state, cfg, notes), `Plan failed slice lint. Replanning (retry ${state.planRetries}/${cfg.maxPlanRetries}).`);
+		return issue(p, state, planDirective(p, state, cfg, notes), `Plan failed validation. Replanning (retry ${state.planRetries}/${cfg.maxPlanRetries}).`);
 	}
-	if (!lint.ok) logEvent(state, "slice lint still failing after max replans -> surfacing to gate");
+	if (!valid) logEvent(state, "plan validation still failing after max replans -> surfacing to gate");
 	if (ctx.hasUI) ctx.ui.notify(`Slices: ${sliceFiles.join(", ")}`, "info");
-	const lintWarn = lint.ok ? "" : ` WARNING: slice lint still failing after ${cfg.maxPlanRetries} replans (${lint.findings.length} findings).`;
+	const lintWarn = valid ? "" : ` WARNING: plan validation still failing after ${cfg.maxPlanRetries} replans (lint: ${lint.ok ? "ok" : lint.findings.length + " findings"}, judge: ${judgeVerdict}; see ${p.planJudgement}).`;
 	const gated = await runGate(
 		env,
 		`Phase 3 (PLAN) complete — approve the ${sliceFiles.length} slices?${lintWarn}`,
@@ -504,6 +606,8 @@ async function onPlan(env: Env): Promise<string> {
 			removeFiles(listSliceFiles(p).map((f) => join(p.slices, f))); // discard the rejected slices before re-planning
 			return planDirective(p, state, cfg, notes);
 		},
+		"plan",
+		valid,
 	);
 	if (gated !== null) return gated;
 	state.slices = sliceFiles;
@@ -575,10 +679,25 @@ async function onVerified(env: Env): Promise<string> {
 	// After a loop iteration, missing verdicts count as failures.
 	const failed = VERIFY_DIMENSIONS.filter((d) => verdicts[d] !== "PASS");
 	if (failed.length === 0) {
-		state.phase = "done";
-		state.pending = null;
-		logEvent(state, "clean verification pass");
-		saveState(p, state);
+		// Completion gate: the 5 refute verifiers are the mechanism; this gate is a
+		// removable overlay. autonomy.verify="auto" (or autoApprove) advances
+		// headless; "human" asks before declaring the feature done.
+		// All 5 dimensions passed, so the artifact is clean by definition (clean=true).
+		const g = await gate(env.ctx, cfg, "Verification clean on all 5 dimensions — accept and finish?", `${p.verify}/`, "verify");
+		logEvent(state, `gate verify: ${g.decision}`);
+		if (g.decision === "pause") return PAUSE_MSG(`${p.verify}/`, state.slug);
+		if (g.decision === "abort") return stopped(p, state, "user aborted at verify completion gate");
+		if (g.decision === "revise") {
+			// All dimensions pass, so there is no failed dimension to loop on. Record
+			// the feedback and stop deterministically rather than spinning an empty
+			// loop — the human re-runs /feature or opens a follow-up task.
+			if (g.notes) appendFileSync(join(p.verify, "_gate-feedback.md"), `\n## Completion gate feedback (${new Date().toISOString()})\n\n${g.notes}\n`, "utf8");
+			return stopped(p, state, `human requested changes at the verify completion gate; feedback recorded in ${p.verify}/_gate-feedback.md`);
+		} else {
+			state.phase = "done";
+			state.pending = null;
+			logEvent(state, "clean verification pass");
+			saveState(p, state);
 		// Dispose of the worktree (validate, prompt removal, record disposition)
 		// before telling the user the workflow is complete. Guarded so the
 		// many existing no-exec callers and worktree-less tasks are unaffected.
@@ -592,8 +711,9 @@ async function onVerified(env: Env): Promise<string> {
 			`- Verification: ${p.verify}/`,
 			`- Estimated tokens spent across spawned agents: ~${state.tokensSpent}`,
 			"",
-			"Summarize the feature work for the user and end your turn.",
-		].join("\n");
+				"Summarize the feature work for the user and end your turn.",
+			].join("\n");
+		}
 	}
 
 	if (state.phase !== "loop") {
@@ -634,7 +754,9 @@ const HANDLERS: Record<string, (env: Env) => Promise<string>> = {
 	"frame-compile": onFrameCompiled,
 	architect: onArchitect,
 	"architect-judge": onArchitect,
+	"arch-attack": onArchAttacked,
 	prototype: onPrototype,
+	"prototype-judge": onPrototype,
 	plan: onPlan,
 	build: onSliceReviewed,
 	fixup: onSliceReviewed,

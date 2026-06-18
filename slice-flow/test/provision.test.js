@@ -9,22 +9,23 @@ import { syncBundledAgents, preflightAgents } from "../extensions/lib/engine.ts"
 
 const here = dirname(fileURLToPath(import.meta.url));
 const bundleDir = join(here, "..", "agents");
-const roles = ["scout", "researcher", "builder", "oracle", "planner", "reviewer"];
+const roles = ["scout", "researcher", "builder", "oracle-adversary", "oracle-judge", "planner", "reviewer"];
 
 // The full agents map the workflow actually configures (see slice-flow.json /
-// DEFAULT_CONFIG.agents) — every value resolves to one of the six bundled files.
+// DEFAULT_CONFIG.agents) — every value resolves to one of the bundled files.
 const cfg = {
   agents: {
     intake: "slice-flow-scout",
     research: "slice-flow-researcher",
-    attack: "slice-flow-oracle",
+    attack: "slice-flow-oracle-adversary",
     compile: "slice-flow-scout",
-    frameJudge: "slice-flow-oracle",
+    frameJudge: "slice-flow-oracle-judge",
     hypothesis: "slice-flow-scout",
-    architectJudge: "slice-flow-oracle",
+    architectJudge: "slice-flow-oracle-judge",
     prototype: "slice-flow-builder",
-    prototypeJudge: "slice-flow-oracle",
+    prototypeJudge: "slice-flow-oracle-judge",
     plan: "slice-flow-planner",
+    planJudge: "slice-flow-oracle-judge",
     build: "slice-flow-builder",
     review: "slice-flow-reviewer",
     fixup: "slice-flow-builder",
@@ -36,14 +37,14 @@ function freshCwd() {
   return mkdtempSync(join(tmpdir(), "slice-flow-provision-"));
 }
 
-test("a fresh install provisions all six agents into <cwd>/.pi/agents/", () => {
+test("a fresh install provisions all bundled agents into <cwd>/.pi/agents/", () => {
   // Simulates the real install path end-to-end: no .pi/agents/ exists yet.
   const cwd = freshCwd();
   assert.ok(!existsSync(join(cwd, ".pi", "agents")), "precondition: target dir absent");
 
   const provisioned = syncBundledAgents(cwd);
 
-  assert.equal(provisioned.length, 6, "all six bundled agents are copied");
+  assert.equal(provisioned.length, roles.length, "all bundled agents are copied");
   for (const role of roles) {
     const dest = join(cwd, ".pi", "agents", `slice-flow-${role}.md`);
     assert.ok(existsSync(dest), `slice-flow-${role}.md was provisioned`);
