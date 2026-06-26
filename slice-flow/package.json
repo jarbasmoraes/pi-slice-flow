@@ -44,6 +44,16 @@
   },
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.check.json",
-    "test": "node --test"
+    "test": "node --test",
+    "web:doctor": "node scripts/web-doctor.mjs"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.5.0",
+    "linkedom": "^0.16.0",
+    "playwright-core": "^1.48.0",
+    "turndown": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/turndown": "^5.0.6"
   }
 }

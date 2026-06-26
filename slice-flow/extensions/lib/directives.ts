@@ -67,8 +67,18 @@ export function injectIsolationCwd(args: Record<string, unknown>, state: State):
 
 // --- DRY building blocks -----------------------------------------------------
 
+/** Resolve a phase's model spec to the model for parallel run `i`. A single
+ * string applies to every run; a list round-robins across the fan-out so each
+ * run can use a different model family; null inherits the agent/session
+ * default. Non-fan-out callers omit `i` and get index 0. */
+function modelAt(spec: string | string[] | null, i = 0): string | null {
+	if (Array.isArray(spec)) return spec.length ? spec[i % spec.length] : null;
+	return spec;
+}
+
 /** Spread helper: include `model` only when configured (null inherits the session default). */
-function withModel(model: string | null): { model?: string } {
+function withModel(spec: string | string[] | null, i = 0): { model?: string } {
+	const model = modelAt(spec, i);
 	return model ? { model } : {};
 }
 
@@ -137,7 +147,7 @@ export function intakeDirective(p: Paths, state: State, cfg: SliceFlowConfig): D
 
 export function researchDirective(p: Paths, state: State, cfg: SliceFlowConfig, questions: string[]): Directive {
 	let seq = nextSeqIn(p.frameResearch);
-	const tasks = questions.map((q) => {
+	const tasks = questions.map((q, i) => {
 		const outPath = join(p.frameResearch, `${pad3(seq)}-${slugify(q)}.md`);
 		seq += 1;
 		const step = makeBriefStep(p, state, `research-${slugify(q, 4)}-brief`, researchBrief(state.feature, q, outPath));
@@ -147,7 +157,7 @@ export function researchDirective(p: Paths, state: State, cfg: SliceFlowConfig, 
 			label: `Research: ${q.slice(0, 60)}`,
 			reads: [step.briefPath],
 			output: outPath,
-			...withModel(cfg.models.research),
+			...withModel(cfg.models.research, i),
 		};
 	});
 	return {
@@ -161,7 +171,7 @@ export function researchDirective(p: Paths, state: State, cfg: SliceFlowConfig, 
 
 export function attackDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
 	let seq = nextSeqIn(p.frameAttacks);
-	const tasks = ATTACK_CHARTERS.slice(0, cfg.attackCount).map((charter) => {
+	const tasks = ATTACK_CHARTERS.slice(0, cfg.attackCount).map((charter, i) => {
 		const outPath = join(p.frameAttacks, `${pad3(seq)}-${charter.id}.md`);
 		seq += 1;
 		const step = makeBriefStep(p, state, `attack-${charter.id}-brief`, attackBrief(p, state.feature, charter, outPath));
@@ -171,7 +181,7 @@ export function attackDirective(p: Paths, state: State, cfg: SliceFlowConfig): D
 			label: `Attack: ${charter.id}`,
 			reads: [step.briefPath, p.ledger, p.intake],
 			output: outPath,
-			...withModel(cfg.models.attack),
+			...withModel(cfg.models.attack, i),
 		};
 	});
 	return {
@@ -225,7 +235,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 		logEvent(state, `warning: hypothesisCount ${cfg.hypothesisCount} exceeds the ${HYPOTHESIS_ANGLES.length} available angles; clamped`);
 	}
 	const angles = HYPOTHESIS_ANGLES.slice(0, Math.max(1, Math.min(cfg.hypothesisCount, HYPOTHESIS_ANGLES.length)));
-	const parallel = angles.map((a) => {
+	const parallel = angles.map((a, i) => {
 		const step = makeBriefStep(p, state, `hypothesis-${a.id}-brief`, hypothesisBrief(p, a, notes));
 		return {
 			agent: cfg.agents.hypothesis,
@@ -236,7 +246,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 			output: join(p.arch, `hypothesis-${a.id}.md`),
 			outputMode: "file-only",
 			...(state.codegraphReady ? { skill: "codegraph" } : {}),
-			...withModel(cfg.models.hypothesis),
+			...withModel(cfg.models.hypothesis, i),
 		};
 	});
 
@@ -296,7 +306,7 @@ export function architectJudgeDirective(p: Paths, state: State, cfg: SliceFlowCo
  * objection and emits the ARCH-ATTACK marker. Runs once before the gate. */
 export function archAttackDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
 	let seq = nextSeqIn(p.archAttacks);
-	const tasks = ARCH_ATTACK_CHARTERS.slice(0, cfg.attackCount).map((charter) => {
+	const tasks = ARCH_ATTACK_CHARTERS.slice(0, cfg.attackCount).map((charter, i) => {
 		const outPath = join(p.archAttacks, `${pad3(seq)}-${charter.id}.md`);
 		seq += 1;
 		const step = makeBriefStep(p, state, `arch-attack-${charter.id}-brief`, archAttackBrief(p, charter.id, outPath));
@@ -308,7 +318,7 @@ export function archAttackDirective(p: Paths, state: State, cfg: SliceFlowConfig
 			skill: "architecture-attack",
 			reads: [step.briefPath, p.frame, p.architecture],
 			output: outPath,
-			...withModel(cfg.models.attack),
+			...withModel(cfg.models.attack, i),
 		};
 	});
 	const attackPaths = tasks.map((t) => t.output);
@@ -345,7 +355,7 @@ export function prototypeDirective(p: Paths, state: State, cfg: SliceFlowConfig)
 			reads: [step.briefPath, p.frame, p.architecture],
 			skill: "ui-prototyping",
 			output: false,
-			...withModel(cfg.models.prototype),
+			...withModel(cfg.models.prototype, i),
 		};
 	});
 
@@ -500,7 +510,7 @@ export function fixupDirective(p: Paths, state: State, cfg: SliceFlowConfig): Di
 	};
 }
 
-function verifierTask(p: Paths, state: State, cfg: SliceFlowConfig, dim: VerifyDimension) {
+function verifierTask(p: Paths, state: State, cfg: SliceFlowConfig, dim: VerifyDimension, i = 0) {
 	const step = makeBriefStep(p, state, `verify-${dim}-brief`, verifierBrief(p, dim, state.baselineCommit, cfg.workDir));
 	return {
 		agent: cfg.agents.verify,
@@ -508,7 +518,7 @@ function verifierTask(p: Paths, state: State, cfg: SliceFlowConfig, dim: VerifyD
 		reads: [step.briefPath, p.frame, p.architecture, p.plan],
 		skill: "verify-rubrics",
 		output: join(p.verify, `${dim}.md`),
-		...withModel(cfg.models.verify),
+		...withModel(cfg.models.verify, i),
 	};
 }
 
@@ -517,7 +527,7 @@ export function verifyDirective(p: Paths, state: State, cfg: SliceFlowConfig): D
 		kind: "verify",
 		seq: state.seq,
 		label: "Phase 5 — VERIFY (5 dimensions, parallel)",
-		args: freshParallel(VERIFY_DIMENSIONS.map((dim) => verifierTask(p, state, cfg, dim))),
+		args: freshParallel(VERIFY_DIMENSIONS.map((dim, i) => verifierTask(p, state, cfg, dim, i))),
 	};
 }
 
@@ -605,8 +615,8 @@ export function loopDirective(p: Paths, state: State, cfg: SliceFlowConfig): Dir
 	// its own verify/<dim>.md, so onVerified always reads fresh evidence.
 	// reverifyAllInLoop=false restores the cheaper failed-only behavior.
 	const reVerifyDims = cfg.reverifyAllInLoop ? VERIFY_DIMENSIONS : state.failedDimensions;
-	const reVerify = reVerifyDims.map((dim) => ({
-		...verifierTask(p, state, cfg, dim),
+	const reVerify = reVerifyDims.map((dim, i) => ({
+		...verifierTask(p, state, cfg, dim, i),
 		label: state.failedDimensions.includes(dim) ? `Re-verify ${dim}` : `Regression-check ${dim}`,
 	}));
 	return {

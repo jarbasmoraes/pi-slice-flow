@@ -1,192 +1,113 @@
 /**
- * web-research — free web access tools for Pi agents, no API keys, no bash.
+ * web-research — Playwright-backed web tools for Pi agents (registerTool only,
+ * no bash). Registers `web_search`, `fetch_content`, and `get_search_content`,
+ * the trio the pi-subagents `researcher` agent allowlists.
  *
- * Registers `web_search` (DuckDuckGo HTML endpoint) and `fetch_content`
- * (Jina Reader with a direct-fetch fallback), implemented with Node's native
- * fetch. The tool names deliberately match what pi-subagents' builtin
- * `researcher` agent allowlists (`tools: read, write, web_search,
- * fetch_content, ...`), so installing this package makes that agent work
- * out of the box — and keeps the names compatible with pi-web-access if you
- * ever swap to it for richer backends.
+ * Engine split:
+ *   - search  → pluggable provider (default `ddg`, rendered through the browser;
+ *               `perplexity`/`google` activate when their API key is configured).
+ *   - content → always rendered locally with playwright-core + a brew-managed
+ *               Chrome, then extracted with Readability. No third-party proxy.
  *
- * Failure policy: loud. A rate-limited search or a blocked page returns an
- * explicit error message, never silently empty results, so research agents
- * can record "source unavailable" instead of hallucinating findings.
+ * Browser binary is system/brew-managed (channel: "chrome"), NOT downloaded by
+ * npm. Verify the toolchain with: npm run web:doctor.
+ *
+ * Failure policy: loud. A challenged search or a blocked page returns an
+ * explicit error so research agents record "source unavailable" rather than
+ * hallucinate. Security: SSRF guard, ephemeral contexts, no stored credentials.
  */
 
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { postForm, renderHtml } from "./lib/web-research/browser.ts";
+import { resolveConfig, type WebResearchConfig } from "./lib/web-research/config.ts";
+import { extractReadable } from "./lib/web-research/extract.ts";
+import { formatSearchBlock, formatSearchFailure, truncate } from "./lib/web-research/format.ts";
+import { assertPublicHttpUrl } from "./lib/web-research/net-guard.ts";
+import { selectProvider } from "./lib/web-research/providers.ts";
+import type { ProviderDeps, SearchResult } from "./lib/web-research/types.ts";
+import { mapLimit } from "./lib/web-research/util.ts";
 
-const BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
-const SEARCH_TIMEOUT_MS = 15_000;
-const FETCH_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_RESULTS = 8;
 const DEFAULT_MAX_CHARS = 20_000;
+const GET_CONTENT_CONCURRENCY = 3;
 
-// --- Shared plumbing ----------------------------------------------------------
+function loadConfig(): WebResearchConfig {
+	let file: Record<string, unknown> | null = null;
+	try {
+		file = JSON.parse(readFileSync(join(homedir(), ".pi", "web-research.json"), "utf8"));
+	} catch {
+		/* no config file — env + defaults */
+	}
+	return resolveConfig(process.env, file);
+}
 
-/** Combine the tool-call abort signal with a hard timeout (no AbortSignal.any dependency). */
-function timeoutSignal(parent: AbortSignal | undefined, ms: number): { signal: AbortSignal; done: () => void } {
-	const ctrl = new AbortController();
-	const timer = setTimeout(() => ctrl.abort(new Error(`timed out after ${ms}ms`)), ms);
-	const onParentAbort = () => ctrl.abort(parent?.reason);
-	parent?.addEventListener("abort", onParentAbort, { once: true });
+function providerDeps(cfg: WebResearchConfig): ProviderDeps {
 	return {
-		signal: ctrl.signal,
-		done: () => {
-			clearTimeout(timer);
-			parent?.removeEventListener("abort", onParentAbort);
+		renderHtml: (url) => renderHtml(url, cfg.browser),
+		postForm: (url, fields) => postForm(url, fields, cfg.browser),
+		fetchText: async (url) => {
+			assertPublicHttpUrl(url);
+			const res = await fetch(url, { headers: { Accept: "text/html" } });
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			return res.text();
 		},
+		fetchJson: async (url, init) => {
+			assertPublicHttpUrl(url);
+			const res = await fetch(url, init);
+			if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => "")}`.slice(0, 300));
+			return res.json();
+		},
+		options: cfg.providerOptions,
 	};
 }
 
-function decodeEntities(s: string): string {
-	return s
-		.replace(/&amp;/g, "&")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&#x27;|&#39;/g, "'")
-		.replace(/&nbsp;/g, " ");
+async function runSearch(query: string, maxResults: number, cfg: WebResearchConfig): Promise<SearchResult[]> {
+	const provider = selectProvider(cfg.provider);
+	return provider.search(query, { maxResults }, providerDeps(cfg));
 }
 
-function stripTags(html: string): string {
-	return decodeEntities(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+async function fetchOne(url: string, maxChars: number, cfg: WebResearchConfig): Promise<string> {
+	assertPublicHttpUrl(url);
+	const html = await renderHtml(url, cfg.browser);
+	const text = extractReadable(html, url);
+	const { body } = truncate(text, maxChars);
+	return body;
 }
-
-// --- web_search: DuckDuckGo HTML endpoint --------------------------------------
-
-interface SearchResult {
-	title: string;
-	url: string;
-	snippet: string;
-}
-
-/** Resolve DDG's `/l/?uddg=<encoded>` redirect links to the real target URL. */
-function ddgTargetUrl(href: string): string {
-	const match = href.match(/[?&]uddg=([^&]+)/);
-	if (match) {
-		try {
-			return decodeURIComponent(match[1]);
-		} catch {
-			/* fall through to raw href */
-		}
-	}
-	return href.startsWith("//") ? `https:${href}` : href;
-}
-
-async function ddgSearch(query: string, maxResults: number, parentSignal: AbortSignal | undefined): Promise<SearchResult[]> {
-	const t = timeoutSignal(parentSignal, SEARCH_TIMEOUT_MS);
-	let html: string;
-	try {
-		const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
-			headers: { "User-Agent": BROWSER_UA, Accept: "text/html" },
-			signal: t.signal,
-		});
-		if (!res.ok) throw new Error(`DuckDuckGo returned HTTP ${res.status}`);
-		html = await res.text();
-	} finally {
-		t.done();
-	}
-
-	const anchors = [...html.matchAll(/<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)];
-	const snippets = [...html.matchAll(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g)];
-	if (anchors.length === 0) {
-		const blocked = /challenge|captcha|anomaly|too many requests/i.test(html);
-		throw new Error(
-			blocked
-				? "DuckDuckGo rate-limited or challenged this request; retry later or rephrase the query"
-				: "DuckDuckGo returned a page with no parseable results; the endpoint markup may have changed",
-		);
-	}
-	return anchors.slice(0, maxResults).map((a, i) => ({
-		title: stripTags(a[2]),
-		url: ddgTargetUrl(a[1]),
-		snippet: snippets[i] ? stripTags(snippets[i][1]) : "",
-	}));
-}
-
-// --- fetch_content: Jina Reader, then direct fetch -----------------------------
-
-function htmlToText(html: string): string {
-	const noScripts = html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ");
-	const titleMatch = noScripts.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-	const body = decodeEntities(
-		noScripts
-			.replace(/<(br|\/p|\/div|\/h[1-6]|\/li|\/tr)[^>]*>/gi, "\n")
-			.replace(/<[^>]+>/g, " "),
-	)
-		.replace(/[ \t]+/g, " ")
-		.replace(/\n\s*\n\s*\n+/g, "\n\n")
-		.trim();
-	return titleMatch ? `Title: ${stripTags(titleMatch[1])}\n\n${body}` : body;
-}
-
-async function fetchViaJina(url: string, parentSignal: AbortSignal | undefined): Promise<string> {
-	const t = timeoutSignal(parentSignal, FETCH_TIMEOUT_MS);
-	try {
-		const res = await fetch(`https://r.jina.ai/${url}`, { headers: { Accept: "text/plain" }, signal: t.signal });
-		if (!res.ok) throw new Error(`Jina Reader returned HTTP ${res.status}`);
-		const text = (await res.text()).trim();
-		if (text.length < 40) throw new Error("Jina Reader returned an empty extraction");
-		return text;
-	} finally {
-		t.done();
-	}
-}
-
-async function fetchDirect(url: string, parentSignal: AbortSignal | undefined): Promise<string> {
-	const t = timeoutSignal(parentSignal, FETCH_TIMEOUT_MS);
-	try {
-		const res = await fetch(url, { headers: { "User-Agent": BROWSER_UA }, signal: t.signal });
-		if (!res.ok) throw new Error(`HTTP ${res.status}`);
-		const contentType = res.headers.get("content-type") ?? "";
-		const raw = await res.text();
-		return /html/i.test(contentType) ? htmlToText(raw) : raw.trim();
-	} finally {
-		t.done();
-	}
-}
-
-// --- Extension entry ------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "web_search",
 		label: "Web Search",
 		description:
-			"Search the web (DuckDuckGo, free, no API key). Accepts multiple queries to cover a topic from several angles; " +
-			"returns title, URL, and snippet per result. Use fetch_content to read the full text of promising URLs.",
+			"Search the web via a configurable provider (default DuckDuckGo, rendered headlessly; Perplexity/Google when keyed). " +
+			"Accepts multiple queries to cover a topic from several angles; returns title, URL, and snippet per result. " +
+			"Use fetch_content to read the full text of promising URLs.",
 		parameters: Type.Object({
 			queries: Type.Array(Type.String({ description: "A search query" }), {
 				minItems: 1,
 				maxItems: 5,
 				description: "1-5 search queries; use distinct angles instead of one generic query",
 			}),
-			maxResults: Type.Optional(Type.Number({ description: `Max results per query (default ${DEFAULT_MAX_RESULTS})` })),
+			maxResults: Type.Optional(Type.Number({ description: "Max results per query (default from config, capped at 20)" })),
 		}),
-		async execute(_toolCallId, params, signal) {
-			const maxResults = Math.max(1, Math.min(params.maxResults ?? DEFAULT_MAX_RESULTS, 20));
+		async execute(_id, params) {
+			const cfg = loadConfig();
+			const maxResults = Math.max(1, Math.min(params.maxResults ?? cfg.maxResults, 20));
 			const blocks: string[] = [];
 			let failures = 0;
-			// Sequential on purpose: parallel hits get the DDG endpoint rate-limited.
 			for (const query of params.queries) {
 				try {
-					const results = await ddgSearch(query, maxResults, signal);
-					blocks.push(
-						[`## Results for: ${query}`, ...results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ""}`)].join(
-							"\n",
-						),
-					);
+					blocks.push(formatSearchBlock(query, await runSearch(query, maxResults, cfg)));
 				} catch (err) {
 					failures += 1;
-					blocks.push(`## SEARCH FAILED for: ${query}\nReason: ${err instanceof Error ? err.message : String(err)}`);
+					blocks.push(formatSearchFailure(query, err instanceof Error ? err.message : String(err)));
 				}
 			}
-			if (failures === params.queries.length) {
-				throw new Error(`All ${failures} searches failed.\n\n${blocks.join("\n\n")}`);
-			}
-			return { content: [{ type: "text", text: blocks.join("\n\n") }], details: {} };
+			if (failures === params.queries.length) throw new Error(`All ${failures} searches failed.\n\n${blocks.join("\n\n")}`);
+			return { content: [{ type: "text", text: blocks.join("\n\n") }], details: { provider: cfg.provider } };
 		},
 	});
 
@@ -194,39 +115,47 @@ export default function (pi: ExtensionAPI) {
 		name: "fetch_content",
 		label: "Fetch Content",
 		description:
-			"Fetch a URL and return its content as readable text (free, no API key). Tries Jina Reader for clean markdown, " +
-			"falls back to a direct fetch with HTML stripped. Output is truncated to a character cap.",
+			"Fetch a URL and return its main content as readable Markdown. Renders the page in a headless browser (handles JS) " +
+			"and extracts the article with Readability. Output is truncated to a character cap. Private/loopback/metadata hosts are blocked.",
 		parameters: Type.Object({
 			url: Type.String({ description: "The http(s) URL to fetch" }),
-			maxChars: Type.Optional(Type.Number({ description: `Truncate the content to this many characters (default ${DEFAULT_MAX_CHARS})` })),
+			maxChars: Type.Optional(Type.Number({ description: `Truncate content to this many characters (default ${DEFAULT_MAX_CHARS})` })),
 		}),
-		async execute(_toolCallId, params, signal) {
-			if (!/^https?:\/\//i.test(params.url)) throw new Error(`fetch_content requires an http(s) URL, got: ${params.url}`);
+		async execute(_id, params) {
+			const cfg = loadConfig();
 			const maxChars = Math.max(1000, Math.min(params.maxChars ?? DEFAULT_MAX_CHARS, 100_000));
+			const body = await fetchOne(params.url, maxChars, cfg);
+			return { content: [{ type: "text", text: `Source: ${params.url}\n\n${body}` }], details: {} };
+		},
+	});
 
-			let text: string;
-			let via: string;
-			try {
-				text = await fetchViaJina(params.url, signal);
-				via = "jina-reader";
-			} catch (jinaErr) {
+	pi.registerTool({
+		name: "get_search_content",
+		label: "Search + Fetch Content",
+		description:
+			"Search the web and fetch the readable content of the top results in one step. Returns each source's content as Markdown. " +
+			"Use when you want the actual page text behind search hits, not just snippets.",
+		parameters: Type.Object({
+			query: Type.String({ description: "The search query" }),
+			maxResults: Type.Optional(Type.Number({ description: "How many top results to fetch (default 3, capped at 8)" })),
+			maxChars: Type.Optional(Type.Number({ description: `Per-page character cap (default ${DEFAULT_MAX_CHARS})` })),
+		}),
+		async execute(_id, params) {
+			const cfg = loadConfig();
+			const n = Math.max(1, Math.min(params.maxResults ?? 3, 8));
+			const maxChars = Math.max(1000, Math.min(params.maxChars ?? DEFAULT_MAX_CHARS, 100_000));
+			const results = await runSearch(params.query, n, cfg);
+			const sources = results.filter((r) => r.url);
+			if (sources.length === 0) throw new Error(`No results with fetchable URLs for: ${params.query}`);
+			const sections = await mapLimit(sources, GET_CONTENT_CONCURRENCY, async (r) => {
 				try {
-					text = await fetchDirect(params.url, signal);
-					via = "direct-fetch";
-				} catch (directErr) {
-					throw new Error(
-						`Could not fetch ${params.url}. Jina Reader: ${jinaErr instanceof Error ? jinaErr.message : jinaErr}. ` +
-							`Direct fetch: ${directErr instanceof Error ? directErr.message : directErr}. Record this source as unavailable.`,
-					);
+					const body = await fetchOne(r.url, maxChars, cfg);
+					return `## ${r.title || r.url}\nSource: ${r.url}\n\n${body}`;
+				} catch (err) {
+					return `## ${r.title || r.url}\nSource: ${r.url}\n\n[FETCH FAILED: ${err instanceof Error ? err.message : String(err)}]`;
 				}
-			}
-
-			const truncated = text.length > maxChars;
-			const body = truncated ? `${text.slice(0, maxChars)}\n\n[TRUNCATED at ${maxChars} chars — full page was ${text.length} chars]` : text;
-			return {
-				content: [{ type: "text", text: `Source: ${params.url} (via ${via})\n\n${body}` }],
-				details: { via, truncated },
-			};
+			});
+			return { content: [{ type: "text", text: sections.join("\n\n---\n\n") }], details: { provider: cfg.provider, fetched: sources.length } };
 		},
 	});
 }

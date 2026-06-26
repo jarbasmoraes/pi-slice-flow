@@ -93,7 +93,18 @@ test("slice-flow.json agents object points only at namespaced agents", () => {
   for (const [phase, value] of Object.entries(cfg.agents)) {
     assert.match(value, pattern, `agent for phase ${phase} is not namespaced: ${value}`);
   }
-  for (const value of Object.values(cfg.models)) {
-    assert.equal(value, null, "every model override must remain null");
+  // Model overrides may be null (inherit), a single "provider/model" id, or a
+  // list of such ids that round-robins across a fan-out's parallel runs.
+  const modelId = /^[a-z0-9-]+\/[A-Za-z0-9.:_-]+$/;
+  const assertModelSpec = (spec, phase) => {
+    if (spec === null) return;
+    const list = Array.isArray(spec) ? spec : [spec];
+    assert.ok(list.length > 0, `model override for ${phase} is an empty list`);
+    for (const id of list) {
+      assert.match(id, modelId, `model override for ${phase} is not a provider/model id: ${id}`);
+    }
+  };
+  for (const [phase, value] of Object.entries(cfg.models)) {
+    assertModelSpec(value, phase);
   }
 });

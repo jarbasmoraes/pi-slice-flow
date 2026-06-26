@@ -17,20 +17,20 @@
     "verify": "slice-flow-reviewer"
   },
   "models": {
-    "intake": null,
-    "research": null,
-    "attack": null,
-    "compile": null,
-    "frameJudge": null,
-    "hypothesis": null,
-    "architectJudge": null,
-    "prototype": null,
-    "prototypeJudge": null,
-    "plan": null,
-    "planJudge": null,
-    "build": null,
-    "review": null,
-    "fixup": null,
-    "verify": null
+    "intake": "anthropic/claude-haiku-4-5",
+    "research": ["anthropic/claude-haiku-4-5", "openai-codex/gpt-5.4-mini", "ollama/qwen3.6-27b-256k:latest"],
+    "attack": ["openai-codex/gpt-5.5", "anthropic/claude-opus-4-8", "ollama/qwen3-coder-next:latest"],
+    "compile": "anthropic/claude-sonnet-4-6",
+    "frameJudge": "openai-codex/gpt-5.5",
+    "hypothesis": ["anthropic/claude-opus-4-8", "openai-codex/gpt-5.5", "anthropic/claude-sonnet-4-6"],
+    "architectJudge": "openai-codex/gpt-5.5",
+    "prototype": ["anthropic/claude-sonnet-4-6", "openai-codex/gpt-5.4", "anthropic/claude-haiku-4-5", "ollama/qwen3-coder-next:latest", "ollama/gemma4-31b-256k:latest"],
+    "prototypeJudge": "openai-codex/gpt-5.5",
+    "plan": "anthropic/claude-opus-4-8",
+    "planJudge": "openai-codex/gpt-5.5",
+    "build": "anthropic/claude-sonnet-4-6",
+    "review": "openai-codex/gpt-5.5",
+    "fixup": "anthropic/claude-opus-4-8",
+    "verify": ["openai-codex/gpt-5.5", "ollama/qwen3-coder-next:latest", "anthropic/claude-opus-4-8", "openai-codex/gpt-5.4", "openai-codex/gpt-5.5"]
   }
 }
