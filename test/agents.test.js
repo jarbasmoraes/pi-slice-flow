@@ -45,6 +45,17 @@ test("each bundle frontmatter uses the namespaced name and no bare slice-<role> 
   }
 });
 
+test("read-only verdict agents disable the completion mutation guard", () => {
+  // oracle-judge / oracle-adversary / reviewer return a verdict as their captured
+  // final answer and never edit source. Without completionGuard: false, pi-subagents
+  // misclassifies a (correct) no-edit completion as a failed "implementation task"
+  // and the verdict is never saved — re-running the phase and littering slices.
+  for (const role of ["oracle-judge", "oracle-adversary", "reviewer"]) {
+    const text = readFileSync(join(bundleDir, `slice-flow-${role}.md`), "utf8");
+    assert.equal(frontmatterValue(text, "completionGuard"), "false", `slice-flow-${role} must set completionGuard: false`);
+  }
+});
+
 test("researcher bundle keeps web_search and fetch_content tools", () => {
   const text = readFileSync(join(bundleDir, "slice-flow-researcher.md"), "utf8");
   const tools = frontmatterValue(text, "tools");
