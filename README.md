@@ -11,15 +11,22 @@ Phase 1 (FRAME) is the deliberate exception to "everything is a fresh agent":
 the main session becomes the user's **framing partner** — Socratic,
 adversarial, with on-demand web-research and attack fan-outs — because the
 frame is where human intent gets compressed into the spec every later phase
-runs on. The package ships its own free web tools (`extensions/web-research.ts`,
-no API keys) so the research fan-out works out of the box.
+runs on. The package ships its own Playwright-backed web tools
+(`extensions/web-research.ts`, free DuckDuckGo default, no API keys) so the
+research fan-out works out of the box.
 
 ## Requirements
 
 - `pi-subagents` installed (`pi install npm:pi-subagents`) — slice-flow issues
   `subagent` tool calls; it never spawns processes itself. The bundled
-  `slice-flow-researcher` agent carries the `web_search`/`fetch_content`
-  allowlist (same names pi-web-access uses, so swapping later is config-free).
+  `slice-flow-researcher` agent carries the
+  `web_search`/`fetch_content`/`get_search_content` allowlist (same names
+  pi-web-access uses, so swapping later is config-free).
+- For the web-research tools: `npm install` (pulls `playwright-core` + the
+  extraction libs — no browser is downloaded) and a system browser, managed
+  via Homebrew: `brew install --cask google-chrome`. Verify with
+  `npm run web:doctor`. There is no `brew install playwright` formula; only the
+  thin `playwright-core` library is an npm dependency.
 - Optional: your own `ui-prototyping` and `design-guidelines` skills. Phase 3
   references them by name; if absent, pi-subagents warns and proceeds without
   them (slice-flow ships only the five skills below).
@@ -337,15 +344,61 @@ Notes:
 
 ## Web research tools (`extensions/web-research.ts`)
 
-Free, no API keys, no bash: `web_search` (DuckDuckGo HTML endpoint, multi-query)
-and `fetch_content` (Jina Reader with a direct-fetch fallback, truncated). Tool
-names match the dedicated `slice-flow-researcher` agent's `tools` allowlist
-(`web_search`/`fetch_content`), so the frame research fan-out works out of the
-box — and only agents whose allowlist names these tools can use them (builders
-and verifiers cannot).
-Failures are loud by design: a rate-limited search or blocked page returns an
+Playwright-backed, `registerTool`-only (the agent gets **no bash** — the
+extension owns the browser). Three tools, matching the dedicated
+`slice-flow-researcher` agent's `tools` allowlist, so the frame research fan-out
+works out of the box — and only agents whose allowlist names these tools can use
+them (builders and verifiers cannot):
+
+| Tool | What it does |
+|---|---|
+| `web_search` | Multi-query search via a configurable provider (default DuckDuckGo). Returns title/URL/snippet. |
+| `fetch_content` | Renders a URL in headless Chrome (handles JS/SPAs) and extracts the main article as Markdown via Readability. |
+| `get_search_content` | Search + fetch the readable content of the top N results in one step. |
+
+**Browser engine.** Content is rendered locally with `playwright-core` driving a
+**brew-managed Chrome** (`channel: "chrome"`) — no third-party reader proxy, and
+no browser binary downloaded by npm. Install the browser with
+`brew install --cask google-chrome`, then confirm the whole toolchain:
+
+```bash
+npm run web:doctor   # checks libs + launches Chrome + live render + extract
+```
+
+**Pluggable search providers.** `web_search` defaults to free DuckDuckGo (the
+search form is POSTed, which avoids the GET anomaly/rate-limit bounce). Switch
+engines with config — env vars override an optional `~/.pi/web-research.json`,
+which overrides built-in defaults:
+
+| Setting | Env var | Config key | Default |
+|---|---|---|---|
+| Provider | `WEB_SEARCH_PROVIDER` | `provider` | `ddg` |
+| Max results | `WEB_SEARCH_MAX_RESULTS` | `maxResults` | `8` (cap 20) |
+| Browser channel | `WEB_RESEARCH_BROWSER_CHANNEL` | `browserChannel` | `chrome` |
+| Browser path | `WEB_RESEARCH_BROWSER_PATH` | `browserExecutablePath` | _(unset; overrides channel)_ |
+| Headless | `WEB_RESEARCH_HEADLESS` | `headless` | `true` |
+| Perplexity key | `PERPLEXITY_API_KEY` | `perplexityApiKey` | — |
+| Google CSE | `GOOGLE_API_KEY` / `GOOGLE_SEARCH_CX` | `googleApiKey` / `googleCx` | — |
+
+Built-in providers: `ddg` (free, no key), `perplexity` (needs key), `google`
+(needs API key + CSE id). Add more by registering them in
+`extensions/lib/web-research/providers.ts`. Keys are read from env/config only —
+never hardcoded.
+
+```jsonc
+// ~/.pi/web-research.json — example: use Perplexity
+{ "provider": "perplexity", "perplexityApiKey": "pplx-..." }
+```
+
+**Security.** SSRF guard blocks private / loopback / link-local / CGNAT /
+cloud-metadata hosts (and DNS-rebinding at connect time); non-`http(s)` schemes,
+downloads, and heavy resources (images/media/fonts) are blocked; each call uses
+an ephemeral browser context with no persistent profile or stored credentials.
+
+Failures are loud by design: a challenged search or blocked page returns an
 explicit error so researchers record "source unavailable" instead of
-improvising from memory.
+improvising from memory. See [TECH-DEBT.md](TECH-DEBT.md) (DEBT-001) for the
+one-browser-per-process memory note under large fan-outs.
 
 > **Action item:** `skills/slice-rules/SKILL.md` contains a
 > `BEGIN OWNER RULES … END OWNER RULES` block reconstructed from your spec.
@@ -358,7 +411,8 @@ The extension is split by responsibility; each module has one reason to change:
 | Module | Owns | Edit it when… |
 |---|---|---|
 | `extensions/slice-flow.ts` | composition root: tool, hooks, slash commands | you add a command or hook |
-| `extensions/web-research.ts` | standalone `web_search` + `fetch_content` tools | you change search/fetch backends |
+| `extensions/web-research.ts` | registers `web_search` / `fetch_content` / `get_search_content` (entry only) | you add/rename a research tool |
+| `extensions/lib/web-research/` | Playwright browser, SSRF guard, pluggable search providers, extraction, config | you change search/fetch backends or providers |
 | `extensions/lib/config.ts` | defaults + `slice-flow.json` overlay | you add a knob |
 | `extensions/lib/workspace.ts` | state, paths, all `feature-work/` IO | the on-disk contract changes |
 | `extensions/lib/briefs.ts` | every spawned agent's prompt text (pure strings) | you want agents briefed differently |

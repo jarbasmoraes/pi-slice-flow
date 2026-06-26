@@ -7,22 +7,29 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+/** A phase's model spec: a single model applied to every run; OR a list that
+ * round-robins across a fan-out's parallel runs (so adversaries, hypotheses,
+ * prototypes, and verifiers can each run on a different model family); OR null
+ * to inherit the agent/session default. Non-fan-out phases use index 0 of a
+ * list. */
+export type ModelSpec = string | string[] | null;
+
 export interface SliceFlowModels {
-	intake: string | null;
-	research: string | null;
-	attack: string | null;
-	compile: string | null;
-	frameJudge: string | null;
-	hypothesis: string | null;
-	architectJudge: string | null;
-	prototype: string | null;
-	prototypeJudge: string | null;
-	plan: string | null;
-	planJudge: string | null;
-	build: string | null;
-	review: string | null;
-	fixup: string | null;
-	verify: string | null;
+	intake: ModelSpec;
+	research: ModelSpec;
+	attack: ModelSpec;
+	compile: ModelSpec;
+	frameJudge: ModelSpec;
+	hypothesis: ModelSpec;
+	architectJudge: ModelSpec;
+	prototype: ModelSpec;
+	prototypeJudge: ModelSpec;
+	plan: ModelSpec;
+	planJudge: ModelSpec;
+	build: ModelSpec;
+	review: ModelSpec;
+	fixup: ModelSpec;
+	verify: ModelSpec;
 }
 
 /** The human-approval gates, in pipeline order. `frame` is pinned to a human
