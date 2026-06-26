@@ -32,6 +32,7 @@ import {
 	loopFixBrief,
 	planBrief,
 	planJudgeBrief,
+	planSelectBrief,
 	prototypeBrief,
 	prototypeJudgeBrief,
 	reflectBrief,
@@ -39,7 +40,7 @@ import {
 	reviewBrief,
 	verifierBrief,
 } from "./briefs.ts";
-import { VERIFY_DIMENSIONS, hypothesisPaths, logEvent, nextSeqIn, pad3, priorMemoPaths, sliceArtifacts, slugify } from "./workspace.ts";
+import { VERIFY_DIMENSIONS, hypothesisPaths, logEvent, nextSeqIn, pad3, planCandidateDir, priorMemoPaths, sliceArtifacts, slugify } from "./workspace.ts";
 import type { Directive, Paths, ReflectPaths, State, VerifyDimension } from "./workspace.ts";
 
 // --- Worktree isolation --------------------------------------------------------
@@ -285,9 +286,9 @@ export function architectJudgeDirective(p: Paths, state: State, cfg: SliceFlowCo
 	return {
 		kind: "architect-judge",
 		seq: state.seq,
-		label: `Phase 2 — ARCHITECT: re-judge (round ${state.archRetries})`,
+		label: `Phase 2 — ARCHITECT: re-judge (round ${state.archRejudgeRetries})`,
 		expects: [p.architecture],
-		args: freshChain(p, state.seq, `architect-rejudge-r${state.archRetries}`, [
+		args: freshChain(p, state.seq, `architect-rejudge-r${state.archRejudgeRetries}`, [
 			{
 				agent: cfg.agents.architectJudge,
 				task: judgeStep.task,
@@ -408,41 +409,58 @@ export function prototypeJudgeDirective(p: Paths, state: State, cfg: SliceFlowCo
 }
 
 export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, notes?: string): Directive {
-	const step = makeBriefStep(p, state, "plan-brief", planBrief(p, state.ui, notes));
-	const reads = [step.briefPath, p.frame, p.architecture];
-	if (state.ui === "greenfield") reads.push(join(p.prototypes, "JUDGEMENT.md"));
-	const skills = ["slice-rules"];
-	if (state.ui === "existing") skills.push("design-guidelines");
+	const planSkills = ["slice-rules"];
+	if (state.ui === "existing") planSkills.push("design-guidelines");
+	const baseReads = [p.frame, p.architecture];
+	if (state.ui === "greenfield") baseReads.push(join(p.prototypes, "JUDGEMENT.md"));
+	const tag = notes ? `-r${state.planRetries}` : "";
 
-	const judgeStep = makeBriefStep(p, state, "plan-judge-brief", planJudgeBrief(p));
+	// Single-planner legacy path (planCount <= 1): writes the canonical plan +
+	// slices, judged PASS/FAIL. Behaviourally identical to before divergence.
+	if ((cfg.planCount ?? 1) <= 1) {
+		const step = makeBriefStep(p, state, "plan-brief", planBrief(p, state.ui, notes));
+		const judgeStep = makeBriefStep(p, state, "plan-judge-brief", planJudgeBrief(p));
+		return {
+			kind: "plan",
+			seq: state.seq,
+			label: `Phase 3 — PLAN${notes ? ` (retry ${state.planRetries})` : ""}`,
+			expects: [p.plan, p.planJudgement],
+			args: freshChain(p, state.seq, `plan${tag}`, [
+				{ agent: cfg.agents.plan, task: step.task, label: "Write plan and slices", phase: "Plan", skill: planSkills, reads: [step.briefPath, ...baseReads], output: p.plan, ...withModel(cfg.models.plan) },
+				{ agent: cfg.agents.planJudge, task: judgeStep.task, label: "Judge plan decomposition", phase: "Plan", skill: "plan-rubric", reads: [judgeStep.briefPath, p.frame, p.architecture, p.plan], output: p.planJudgement, ...withModel(cfg.models.planJudge) },
+			]),
+		};
+	}
+
+	// Divergence: N independent planners write competing decompositions into
+	// plan-<n>/ candidate dirs; a comparative selector names the winner and the
+	// engine promotes it. Mirrors the architect hypothesis fan-out.
+	const candidates = Array.from({ length: cfg.planCount }, (_, i) => {
+		const n = i + 1;
+		const out = { plan: join(planCandidateDir(p, n), "plan.md"), slices: join(planCandidateDir(p, n), "slices") };
+		const step = makeBriefStep(p, state, `plan-${n}-brief`, planBrief(p, state.ui, notes, out, { n, total: cfg.planCount }));
+		return {
+			agent: cfg.agents.plan,
+			task: step.task,
+			label: `Plan candidate ${n}`,
+			phase: "Plan",
+			skill: planSkills,
+			reads: [step.briefPath, ...baseReads],
+			output: out.plan,
+			...withModel(cfg.models.plan, i),
+		};
+	});
+	const candidatePlans = candidates.map((_, i) => join(planCandidateDir(p, i + 1), "plan.md"));
+	const selectStep = makeBriefStep(p, state, "plan-select-brief", planSelectBrief(p, cfg.planCount));
 	return {
 		kind: "plan",
 		seq: state.seq,
-		label: `Phase 3 — PLAN${notes ? ` (retry ${state.planRetries})` : ""}`,
-		expects: [p.plan, p.planJudgement],
-		args: freshChain(p, state.seq, `plan${notes ? `-r${state.planRetries}` : ""}`, [
-			{
-				agent: cfg.agents.plan,
-				task: step.task,
-				label: "Write plan and slices",
-				phase: "Plan",
-				skill: skills,
-				reads,
-				output: p.plan,
-				...withModel(cfg.models.plan),
-			},
-			{
-				agent: cfg.agents.planJudge,
-				task: judgeStep.task,
-				label: "Judge plan decomposition",
-				phase: "Plan",
-				skill: "plan-rubric",
-				// The planner writes p.plan and the slices in the prior step; the
-				// judge enumerates p.slices/ itself (see the brief).
-				reads: [judgeStep.briefPath, p.frame, p.architecture, p.plan],
-				output: p.planJudgement,
-				...withModel(cfg.models.planJudge),
-			},
+		label: `Phase 3 — PLAN (${cfg.planCount} candidates)${notes ? ` (retry ${state.planRetries})` : ""}`,
+		// p.plan is produced by the engine's promotion step, not the directive.
+		expects: [p.planJudgement, ...candidatePlans],
+		args: freshChain(p, state.seq, `plan${tag}`, [
+			{ parallel: candidates, concurrency: candidates.length },
+			{ agent: cfg.agents.planJudge, task: selectStep.task, label: "Select best plan", phase: "Plan", skill: "plan-rubric", reads: [selectStep.briefPath, p.frame, p.architecture, ...candidatePlans], output: p.planJudgement, ...withModel(cfg.models.planJudge) },
 		]),
 	};
 }
@@ -511,7 +529,7 @@ export function fixupDirective(p: Paths, state: State, cfg: SliceFlowConfig): Di
 	};
 }
 
-function verifierTask(p: Paths, state: State, cfg: SliceFlowConfig, dim: VerifyDimension, i = 0) {
+function verifierTask(p: Paths, state: State, cfg: SliceFlowConfig, dim: VerifyDimension, i = 0, isRegression = false) {
 	const step = makeBriefStep(p, state, `verify-${dim}-brief`, verifierBrief(p, dim, state.baselineCommit, cfg.workDir));
 	return {
 		agent: cfg.agents.verify,
@@ -519,7 +537,7 @@ function verifierTask(p: Paths, state: State, cfg: SliceFlowConfig, dim: VerifyD
 		reads: [step.briefPath, p.frame, p.architecture, p.plan],
 		skill: "verify-rubrics",
 		output: join(p.verify, `${dim}.md`),
-		...withModel(cfg.models.verify, i),
+		...withModel(isRegression ? cfg.models.verifyRegression : cfg.models.verify, i),
 	};
 }
 
@@ -602,10 +620,14 @@ export function reflectDirective(r: ReflectPaths, cfg: SliceFlowConfig, judge: s
  * round-robin) so enforcement can never drift from what is actually spawned. */
 export function loopIterationCost(state: State, cfg: SliceFlowConfig): number {
 	const fixCost = state.failedDimensions.length * modelWeight(modelAt(cfg.models.fixup), cfg.modelWeights);
-	const reVerifyCount = cfg.reverifyAllInLoop ? VERIFY_DIMENSIONS.length : state.failedDimensions.length;
+	const reVerifyDims = cfg.reverifyAllInLoop ? VERIFY_DIMENSIONS : state.failedDimensions;
 	let verifyCost = 0;
-	for (let i = 0; i < reVerifyCount; i++) {
-		verifyCost += modelWeight(modelAt(cfg.models.verify, i), cfg.modelWeights);
+	for (let i = 0; i < reVerifyDims.length; i++) {
+		// Regression-check dims (already passing) run the cheaper verifyRegression
+		// tier; failed dims under repair keep the strong verify model.
+		const isRegression = !state.failedDimensions.includes(reVerifyDims[i]);
+		const spec = isRegression ? cfg.models.verifyRegression : cfg.models.verify;
+		verifyCost += modelWeight(modelAt(spec, i), cfg.modelWeights);
 	}
 	return fixCost + verifyCost;
 }
@@ -630,10 +652,13 @@ export function loopDirective(p: Paths, state: State, cfg: SliceFlowConfig): Dir
 	// its own verify/<dim>.md, so onVerified always reads fresh evidence.
 	// reverifyAllInLoop=false restores the cheaper failed-only behavior.
 	const reVerifyDims = cfg.reverifyAllInLoop ? VERIFY_DIMENSIONS : state.failedDimensions;
-	const reVerify = reVerifyDims.map((dim, i) => ({
-		...verifierTask(p, state, cfg, dim, i),
-		label: state.failedDimensions.includes(dim) ? `Re-verify ${dim}` : `Regression-check ${dim}`,
-	}));
+	const reVerify = reVerifyDims.map((dim, i) => {
+		const isRegression = !state.failedDimensions.includes(dim);
+		return {
+			...verifierTask(p, state, cfg, dim, i, isRegression),
+			label: isRegression ? `Regression-check ${dim}` : `Re-verify ${dim}`,
+		};
+	});
 	return {
 		kind: "loop-fix",
 		seq: state.seq,

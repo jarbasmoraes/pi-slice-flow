@@ -32,3 +32,4 @@ The very first line of your answer is exactly `WINNER: proto-<n>`, naming the wi
 - After the marker, write the per-candidate record above.
 - The winner you name must exist as a `proto-<n>` directory and carry a README.
 - Earn the pick: a winner with no named weakness, or a record that does not rank the losers, is an incomplete judgement.
+- **Reject-all floor.** If no prototype clears the bar — every candidate has a disqualifying flaw, not merely a relative weakness — your first line is exactly `WINNER: NONE-ACCEPTABLE` instead, followed by the per-candidate record explaining why each fails. Do not promote the least-bad option to a winner: the workflow regenerates the prototypes on this verdict (bounded), which is the correct outcome when the whole slate is inadequate.

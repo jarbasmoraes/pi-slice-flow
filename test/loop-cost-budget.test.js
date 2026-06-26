@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { DEFAULT_CONFIG, modelWeight } from "../extensions/lib/config.ts";
 import { loopIterationCost } from "../extensions/lib/directives.ts";
-import { VERIFY_DIMENSIONS, createState } from "../extensions/lib/workspace.ts";
+import { createState } from "../extensions/lib/workspace.ts";
 
 function loopState(failed) {
 	const state = createState("feat", "feat", "base123");
@@ -25,16 +25,18 @@ test("modelWeight falls back to 0.5 when no default is configured", () => {
 	assert.equal(modelWeight("mystery", {}), 0.5);
 });
 
-test("loopIterationCost on DEFAULT_CONFIG: 1 failed dim = 5 opus verifiers + 1 default fixer", () => {
-	// reverifyAllInLoop=true → all 5 dims re-verified at models.verify (opus, weight 1);
-	// fixup model is null → default weight 0.5; one fixer per failed dim.
+test("loopIterationCost on DEFAULT_CONFIG tiers regression dims to the cheaper model", () => {
+	// reverifyAllInLoop=true → all 5 dims re-run. The 1 FAILED dim uses verify
+	// (opus, weight 1); the other 4 are regression-checks on verifyRegression
+	// (sonnet, weight 0.25 each = 1.0); fixup is null → default 0.5 per failed dim.
 	const cost = loopIterationCost(loopState(["security"]), DEFAULT_CONFIG);
-	assert.equal(cost, VERIFY_DIMENSIONS.length * 1 + 1 * 0.5); // 5.5
+	assert.equal(cost, 1 * 1 + 4 * 0.25 + 1 * 0.5); // 2.5 (was 5.5 before tiering)
 });
 
-test("loopIterationCost scales the fixer term with the number of failed dimensions", () => {
+test("loopIterationCost scales failed (opus) vs regression (sonnet) verifiers and fixers", () => {
+	// 3 failed (opus), 2 regression (sonnet), 3 fixers (default).
 	const cost = loopIterationCost(loopState(["security", "tests", "evals"]), DEFAULT_CONFIG);
-	assert.equal(cost, VERIFY_DIMENSIONS.length * 1 + 3 * 0.5); // 6.5
+	assert.equal(cost, 3 * 1 + 2 * 0.25 + 3 * 0.5); // 5.0
 });
 
 test("reverifyAllInLoop=false only charges for the failed dimensions' verifiers", () => {
@@ -46,7 +48,8 @@ test("reverifyAllInLoop=false only charges for the failed dimensions' verifiers"
 test("tiering the verify model down (sonnet) lowers the iteration cost", () => {
 	const cfg = { ...DEFAULT_CONFIG, models: { ...DEFAULT_CONFIG.models, verify: "anthropic/claude-sonnet-4-6" } };
 	const cost = loopIterationCost(loopState(["security"]), cfg);
-	assert.equal(cost, VERIFY_DIMENSIONS.length * 0.25 + 1 * 0.5); // 1.75 — far cheaper than 5.5
+	// failed dim now sonnet (0.25) + 4 regression sonnet (1.0) + fixer (0.5).
+	assert.equal(cost, 1 * 0.25 + 4 * 0.25 + 1 * 0.5); // 1.75
 });
 
 test("DEFAULT_CONFIG ships the new deterministic budget knobs (and not the old token meter)", () => {
