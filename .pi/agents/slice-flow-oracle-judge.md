@@ -5,6 +5,11 @@ model: anthropic/claude-opus-4-8
 fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
 thinking: high
 tools: read, grep, find, ls, bash, write
+# Read-only by design: the verdict is the captured final answer (saved to the
+# step's output path), never file edits. Without this, pi-subagents' completion
+# guard misclassifies a (correctly) no-edit judge as a failed "implementation
+# task" and the verdict never saves. See slice-flow-reviewer/-oracle-adversary.
+completionGuard: false
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false

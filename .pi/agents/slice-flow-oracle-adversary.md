@@ -5,6 +5,10 @@ model: anthropic/claude-opus-4-8
 fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
 thinking: high
 tools: read, grep, find, ls, bash, write
+# Read-only by design: the attack report is the captured final answer, never
+# file edits. completionGuard: false stops pi-subagents' no-edit completion
+# guard from failing this step (and dropping its output). See slice-flow-oracle-judge.
+completionGuard: false
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false

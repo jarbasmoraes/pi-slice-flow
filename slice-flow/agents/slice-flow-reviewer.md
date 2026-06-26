@@ -5,6 +5,11 @@ model: anthropic/claude-opus-4-8
 fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3-coder-next:latest, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
 thinking: high
 tools: read, grep, find, ls, bash, write
+# Read-only by design: the review/verify verdict is the captured final answer,
+# never file edits (bash is for running tests/diffs, not mutating source).
+# completionGuard: false stops pi-subagents from failing a (correct) no-edit
+# verdict as an "implementation task". See slice-flow-oracle-judge.
+completionGuard: false
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false
