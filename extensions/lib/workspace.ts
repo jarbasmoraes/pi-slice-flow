@@ -50,8 +50,10 @@ export interface State {
 	fixupRound: number; // 0 = initial build; 1..maxFixupsPerSlice = fix-up rounds
 	loopIteration: number;
 	failedDimensions: VerifyDimension[];
-	tokensSpent: number; // best-effort estimate across all subagent runs
+	tokensSpent: number; // chars/4 of observed subagent tool I/O — a rough display
+	// figure only (NOT model tokens; child usage is not exposed at the tool boundary).
 	loopStartTokens: number;
+	loopCost: number; // weighted opus-equivalent spawns accrued in the current loop (enforcement)
 	seq: number;
 	codegraphReady: boolean; // a .codegraph/*.db index present at start; gates later codegraph skill injection
 	log: Array<{ ts: string; event: string }>;
@@ -200,6 +202,7 @@ export function createState(
 		failedDimensions: [],
 		tokensSpent: 0,
 		loopStartTokens: 0,
+		loopCost: 0,
 		seq: 0,
 		codegraphReady: false,
 		log: [],
@@ -215,6 +218,7 @@ export function loadState(p: Paths): State | null {
 	s.frameStage = s.frameStage ?? "explore";
 	s.compileRetries = s.compileRetries ?? 0;
 	s.archRetries = s.archRetries ?? 0;
+	s.loopCost = s.loopCost ?? 0;
 	s.planRetries = s.planRetries ?? 0;
 	s.prototypeRetries = s.prototypeRetries ?? 0;
 	s.archApproved = s.archApproved ?? false;
@@ -677,7 +681,11 @@ export function observeSubagentCall(p: Paths, input: unknown): void {
 	writeFileSync(file, JSON.stringify({ ts: new Date().toISOString(), input }, null, 2), "utf8");
 }
 
-/** Accumulate a chars/4 token estimate from a `subagent` tool result. */
+/** Accumulate a chars/4 figure from the `subagent` tool I/O slice-flow can see
+ * at the tool boundary. This is a coarse display number, NOT model-token usage:
+ * a child agent's real token spend (system prompt, reads, reasoning) never crosses
+ * back through the tool result, so this undercounts by roughly 1-2 orders of
+ * magnitude. Loop enforcement uses `state.loopCost` (weighted spawns), not this. */
 export function observeSubagentResult(p: Paths, state: State, input: unknown, content: Array<{ type: string; text?: string }>): void {
 	const inputChars = JSON.stringify(input ?? {}).length;
 	const outputChars = (content ?? [])
@@ -701,7 +709,7 @@ export function statusSummary(p: Paths, state: State): string {
 		parts.push(`slice: ${state.slices[state.sliceIndex] ?? "?"} (${state.sliceIndex + 1}/${state.slices.length}, fix-up round ${state.fixupRound})`);
 	}
 	if (state.phase === "loop") {
-		parts.push(`loop: iteration ${state.loopIteration}, failing: ${state.failedDimensions.join(", ")}`);
+		parts.push(`loop: iteration ${state.loopIteration}, cost ~${state.loopCost.toFixed(1)} spawns, failing: ${state.failedDimensions.join(", ")}`);
 	}
 	if (state.pending) parts.push(`awaiting: ${state.pending.label}`);
 	parts.push(`tokens (est): ${state.tokensSpent}`, `state: ${p.state}`);

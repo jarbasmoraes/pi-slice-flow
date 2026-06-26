@@ -22,6 +22,7 @@ import {
 	intakeDirective,
 	logDirective,
 	loopDirective,
+	loopIterationCost,
 	planDirective,
 	prototypeDirective,
 	prototypeJudgeDirective,
@@ -719,7 +720,7 @@ async function onVerified(env: Env): Promise<string> {
 			`- Architecture: ${p.architecture}`,
 			`- Plan: ${p.plan} (${state.slices.length} slices)`,
 			`- Verification: ${p.verify}/`,
-			`- Estimated tokens spent across spawned agents: ~${state.tokensSpent}`,
+			`- Observed agent I/O across spawned agents (chars/4, not model tokens): ~${state.tokensSpent}`,
 			"",
 				"Summarize the feature work for the user and end your turn.",
 			].join("\n");
@@ -730,17 +731,23 @@ async function onVerified(env: Env): Promise<string> {
 		state.phase = "loop";
 		state.loopIteration = 0;
 		state.loopStartTokens = state.tokensSpent;
+		state.loopCost = 0;
 	}
 	state.failedDimensions = failed;
-	const loopTokens = state.tokensSpent - state.loopStartTokens;
 	if (state.loopIteration >= cfg.maxLoopIterations) {
 		writeBreachReport(p, state, cfg, `max loop iterations (${cfg.maxLoopIterations}) reached`);
 		return stopped(p, state, `loop limit reached with FAIL on: ${failed.join(", ")}. Report written to ${p.report}`);
 	}
-	if (loopTokens > cfg.loopTokenBudget) {
-		writeBreachReport(p, state, cfg, `loop token budget exceeded (~${loopTokens} > ${cfg.loopTokenBudget})`);
-		return stopped(p, state, `token budget exceeded with FAIL on: ${failed.join(", ")}. Report written to ${p.report}`);
+	// Account for the iteration about to be issued before spawning it: the fixer
+	// and verifier counts and models are fully known here, so the weighted spawn
+	// cost is deterministic — stop *before* overspending, not after.
+	const iterationCost = loopIterationCost(state, cfg);
+	if (state.loopCost + iterationCost > cfg.loopCostBudget) {
+		const projected = state.loopCost + iterationCost;
+		writeBreachReport(p, state, cfg, `loop cost budget exceeded (~${projected.toFixed(1)} > ${cfg.loopCostBudget} opus-equivalent spawns)`);
+		return stopped(p, state, `loop cost budget exceeded with FAIL on: ${failed.join(", ")}. Report written to ${p.report}`);
 	}
+	state.loopCost += iterationCost;
 	state.loopIteration += 1;
 	logEvent(state, `loop iteration ${state.loopIteration}: FAIL on ${failed.join(", ")}`);
 	// Clear the verdict files for every dimension the upcoming loop will
@@ -753,7 +760,7 @@ async function onVerified(env: Env): Promise<string> {
 		p,
 		state,
 		loopDirective(p, state, cfg),
-		`Verification FAILED on: ${failed.join(", ")}. Loop iteration ${state.loopIteration}/${cfg.maxLoopIterations} (loop tokens ~${loopTokens}/${cfg.loopTokenBudget}).`,
+		`Verification FAILED on: ${failed.join(", ")}. Loop iteration ${state.loopIteration}/${cfg.maxLoopIterations} (loop cost ~${state.loopCost.toFixed(1)}/${cfg.loopCostBudget} spawns).`,
 	);
 }
 
@@ -1008,7 +1015,8 @@ function writeBreachReport(p: Paths, state: State, cfg: SliceFlowConfig, reason:
 		`- Feature: ${state.feature}`,
 		`- Reason: ${reason}`,
 		`- Loop iterations used: ${state.loopIteration} (max ${cfg.maxLoopIterations})`,
-		`- Estimated loop tokens spent: ${state.tokensSpent - state.loopStartTokens} (budget ${cfg.loopTokenBudget})`,
+		`- Loop spawn cost: ~${state.loopCost.toFixed(1)} opus-equivalent spawns (budget ${cfg.loopCostBudget})`,
+		`- Observed agent I/O (chars/4, not model tokens): ~${state.tokensSpent - state.loopStartTokens}`,
 		`- Remaining FAIL dimensions: ${state.failedDimensions.join(", ")}`,
 		``,
 		...sections,
