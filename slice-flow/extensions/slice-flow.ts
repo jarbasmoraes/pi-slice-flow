@@ -24,7 +24,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { loadConfig } from "./lib/config.ts";
+import { DEFAULT_CONFIG, loadConfig } from "./lib/config.ts";
+import { getTelemetry } from "./lib/telemetry.ts";
 import type { SliceFlowConfig } from "./lib/config.ts";
 import { converge, nextStep, setupWorktree, startAttack, startReflect, startResearch, startWorkflow, stopped } from "./lib/engine.ts";
 import { detectCodegraph } from "./lib/codegraph.ts";
@@ -33,6 +34,7 @@ import { aggregate, computeTaskMetrics, renderReport } from "./lib/metrics.ts";
 import {
 	allocateSlug,
 	ensureGitignored,
+	appendTelemetryDebug,
 	inferTaskSlug,
 	isActive,
 	listTasks,
@@ -40,6 +42,7 @@ import {
 	logEvent,
 	observeSubagentCall,
 	observeSubagentResult,
+	sumUsage,
 	resolveActiveTask,
 	statusSummary,
 	taskVerdictSummary,
@@ -131,6 +134,7 @@ export default function (pi: ExtensionAPI) {
 				const p = workPaths(ctx.cwd, cfg.workDir, slug);
 				const isolation = await setupWorktree(ctx, (c, a, o) => pi.exec(c, a, o), cfg, ctx.cwd, slug, baseline);
 				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, codegraphState, isolation);
+				await getTelemetry(cfg).flush();
 				return { content: [{ type: "text", text }], details: { phase: "frame", slug } };
 			}
 
@@ -176,6 +180,7 @@ export default function (pi: ExtensionAPI) {
 					if (!state || !p) throw new Error(noTaskHint);
 					if (params.note) logEvent(state, `note: ${params.note}`);
 					const text = await nextStep(ctx, p, cfg, state, (c, a, o) => pi.exec(c, a, o));
+					await getTelemetry(cfg).flush();
 					return { content: [{ type: "text", text }], details: { phase: state.phase, slug } };
 				}
 
@@ -208,28 +213,75 @@ export default function (pi: ExtensionAPI) {
 	// workflow is active in this cwd, and must never block the workflow.
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "subagent") return;
+		// Resolve workDir once, defensively, so the error path can record without
+		// re-running loadConfig (which is what may have thrown in the first place).
+		let workDir = DEFAULT_CONFIG.workDir;
 		try {
 			const cfg = loadConfig(ctx.cwd);
+			workDir = cfg.workDir;
 			const slug = inferTaskSlug(ctx.cwd, cfg.workDir, event.input);
-			if (!slug) return;
+			if (!slug) {
+				appendTelemetryDebug(ctx.cwd, workDir, { event: "unattributed-subagent-call" });
+				return;
+			}
 			const p = workPaths(ctx.cwd, cfg.workDir, slug);
-			if (isActive(loadState(p))) observeSubagentCall(p, event.input);
-		} catch {
-			/* observability only */
+			const state = loadState(p);
+			if (!isActive(state)) return;
+			observeSubagentCall(p, event.input);
+			// Open the Langfuse observation for this directive (no-op when telemetry
+			// is off). Id derives from the persisted pending directive so the close
+			// in tool_result resolves the same observation, even across a /reload.
+			if (state.pending && state.telemetry?.traceId) {
+				getTelemetry(cfg).observation({
+					id: `${slug}:${state.pending.seq}:${state.pending.kind}`,
+					traceId: state.telemetry.traceId,
+					name: state.pending.label,
+					startTime: new Date().toISOString(),
+					input: event.input,
+					metadata: { phase: state.phase, kind: state.pending.kind, seq: state.pending.seq },
+				});
+			}
+		} catch (e) {
+			// Observability only — never block the workflow, but no longer invisible.
+			appendTelemetryDebug(ctx.cwd, workDir, { event: "hook-error", hook: "tool_call", error: String(e) });
 		}
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
 		if (event.toolName !== "subagent") return;
+		let workDir = DEFAULT_CONFIG.workDir;
 		try {
 			const cfg = loadConfig(ctx.cwd);
+			workDir = cfg.workDir;
 			const slug = inferTaskSlug(ctx.cwd, cfg.workDir, event.input);
-			if (!slug) return;
+			if (!slug) {
+				appendTelemetryDebug(ctx.cwd, workDir, { event: "unattributed-subagent-result" });
+				return;
+			}
 			const p = workPaths(ctx.cwd, cfg.workDir, slug);
 			const state = loadState(p);
-			if (isActive(state)) observeSubagentResult(p, state, event.input, event.content);
-		} catch {
-			/* best-effort accounting only */
+			if (!isActive(state)) return;
+			observeSubagentResult(p, state, event.input, event.content, event.details);
+			if (state.pending && state.telemetry?.traceId) {
+				const out = (event.content ?? []).map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n").slice(0, 50_000);
+				const usage = sumUsage(event.details);
+				const tel = getTelemetry(cfg);
+				tel.observation({
+					id: `${slug}:${state.pending.seq}:${state.pending.kind}`,
+					traceId: state.telemetry.traceId,
+					endTime: new Date().toISOString(),
+					output: out,
+					...(usage
+						? {
+								usageDetails: { input: usage.input, output: usage.output, total: usage.input + usage.output },
+								costDetails: { total: usage.cost },
+							}
+						: {}),
+				});
+				await tel.flush();
+			}
+		} catch (e) {
+			appendTelemetryDebug(ctx.cwd, workDir, { event: "hook-error", hook: "tool_result", error: String(e) });
 		}
 	});
 

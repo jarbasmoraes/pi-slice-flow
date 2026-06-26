@@ -1,5 +1,31 @@
 # slice-flow Harness Roadmap — Converged & Prioritized
 
+## Implementation status (2026-06-26)
+
+**All 13 findings are implemented.** #6 (loop spawn-cost budget) and #8 (UI-shape
+telemetry) landed earlier; the remaining 11 landed in the observability → cost →
+design sequence below:
+
+- **Observability:** #1 typed `logEvent` (kind/payload) + #7 single `logGate`
+  producer + #3 persisted subagent results & hook diagnostics; #9 real Langfuse
+  tracing via the ingestion REST API (`extensions/lib/telemetry.ts`, off by
+  default, by-id upsert so it survives `/reload`); #13 real per-agent token cost
+  from the `subagent` result `usage` (no pi-subagents patch needed) with an
+  async-mode fallback.
+- **Cost:** #5 `prototypeCount` 5→3; #2 `models.verifyRegression` (regression
+  dims tier down to sonnet, failed dims keep opus); #11 frame-attack ledger-hash
+  cache.
+- **Design:** #4 split `archRetries` into rejudge/reconsider budgets; #10
+  prototype `WINNER: NONE-ACCEPTABLE` reject-all floor; #12 `planCount` plan
+  divergence (N candidates → comparative judge → promote winner; `planCount:1` is
+  the legacy single-planner path).
+
+Verified: `npm run check` clean, 228 tests pass (+33 new), and the Langfuse
+telemetry was smoke-tested against the live self-hosted instance (ingestion 207
+→ trace + generation with real cost landed). The headline theme is resolved:
+override-rate is now structured (not regex-parsed prose), the loop budget is
+deterministic, and real cost is measured per directive.
+
 ## 1. Executive summary
 
 The single most important theme is that **slice-flow's two highest-stakes mechanisms — the autonomy ("flip a gate to auto") evidence loop and the runaway-cost guardrail — are both built on signals that cannot bear the weight placed on them.** The override-rate that earns a gate its `auto` flip lives only as free-text `gate <id>: <decision>` lines re-parsed by regex with no producer/consumer coupling (metrics.ts:58, engine.ts:216), and the 3M-token loop budget is enforced against a `Math.ceil((inputChars+outputChars)/4)` estimate that never sees the dominant fan-out spend, so it can essentially never trip (workspace.ts:686, engine.ts:740). The through-line across all three dimensions: **judgment quality floors are missing exactly where the workflow is least measured.** Design gaps (prototype has no reject-all verdict, briefs.ts:243; archRetries shares one budget across cheap and expensive causes, engine.ts:416/521) become live correctness risks only as gates walk from `human` to `auto` — which is the documented end goal (README.md:280). Cost waste (full-Opus regression re-verification every loop iteration, directives.ts:617; 5-way prototype fan-out, config.ts:100) is real but cannot be confirmed-or-tuned because nothing emits per-phase wall-clock or true token cost. Therefore the correct sequence is **observability first** (make spans/structured events/real token usage exist), then **design hardening** of the auto paths, then **cost-tuning** validated against the new measurements. The quick wins are almost all one-file additive changes that the existing on-disk, IO-free design already accommodates.

@@ -88,7 +88,26 @@ export function overrideRate(g: Pick<GateStat, "approve" | "revise" | "abort" | 
 export function computeTaskMetrics(state: State, verdicts: Record<string, "PASS" | "FAIL" | null> = {}): TaskMetrics {
 	const byGate = new Map<string, GateStat>();
 	const retries: Record<string, number> = {};
-	for (const { event } of state.log ?? []) {
+	for (const entry of state.log ?? []) {
+		// Prefer the structured kind/payload (typed logging); fall back to regex
+		// over the human string for entries persisted before typed logging existed.
+		if (entry.kind === "gate" && entry.payload) {
+			const { gate, decision } = entry.payload as { gate?: string; decision?: string };
+			if (gate && (decision === "approve" || decision === "revise" || decision === "abort" || decision === "pause")) {
+				const stat = byGate.get(gate) ?? emptyGate(gate);
+				stat[decision] += 1;
+				byGate.set(gate, stat);
+				continue;
+			}
+		}
+		if (entry.kind === "retry" && entry.payload) {
+			const { retryKind } = entry.payload as { retryKind?: string };
+			if (retryKind && (RETRY_KINDS as readonly string[]).includes(retryKind)) {
+				retries[retryKind] = (retries[retryKind] ?? 0) + 1;
+				continue;
+			}
+		}
+		const event = entry.event;
 		const gm = GATE_LINE.exec(event);
 		if (gm) {
 			const [, gate, decision] = gm;

@@ -30,6 +30,11 @@ export interface SliceFlowModels {
 	review: ModelSpec;
 	fixup: ModelSpec;
 	verify: ModelSpec;
+	/** Model for the loop's regression-check verifiers — the dimensions that were
+	 * already PASSing and are only re-run to catch a fix that regressed them.
+	 * A cheaper tier than `verify` is appropriate here since the failed dimensions
+	 * (the ones under active repair) keep the strong `verify` model. */
+	verifyRegression: ModelSpec;
 }
 
 /** The human-approval gates, in pipeline order. `frame` is pinned to a human
@@ -63,10 +68,21 @@ export interface SliceFlowConfig {
 	/** Container dir (under cwd) that holds one slug-named folder per task. */
 	workDir: string;
 	hypothesisCount: number;
+	/** Competing plan decompositions judged comparatively (mirrors hypothesisCount
+	 * for the architect). >1 fans out N independent planners into plan-<n>/
+	 * candidate dirs and promotes the selected winner; 1 is the single-planner
+	 * legacy path. */
+	planCount: number;
 	prototypeCount: number;
 	attackCount: number;
 	maxCompileRetries: number;
-	maxArchitectRetries: number;
+	/** Budget for CHEAP architecture re-judges (lint failure or a human "re-judge
+	 * only" revision) — separate from the reconsider budget so a run of cheap
+	 * re-judges can never exhaust the expensive adversary re-run path. */
+	maxArchRejudge: number;
+	/** Budget for EXPENSIVE architecture full re-runs (attack panel RECONSIDER:
+	 * regenerate all hypotheses with the attack findings). */
+	maxArchReconsider: number;
 	maxPlanRetries: number;
 	maxPrototypeRetries: number;
 	maxLoopIterations: number;
@@ -99,6 +115,12 @@ export interface SliceFlowConfig {
 	 * with a UI present. The path to a zero-touch engineer is flipping these to
 	 * "auto" one gate at a time as the override data earns it. */
 	autonomy: Record<GateName, AutonomyMode>;
+	/** Langfuse tracing. Off by default (no surprise network calls; matches the
+	 * conservative autonomy posture). When `enabled`, the telemetry layer also
+	 * requires LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL in the
+	 * environment, else it stays a no-op. `flushOnPause` ships buffered events
+	 * before a gate pause ends the turn; `debug` logs flush failures. */
+	telemetry: { enabled: boolean; flushOnPause: boolean; debug: boolean };
 	agents: SliceFlowAgents;
 	models: SliceFlowModels;
 }
@@ -108,10 +130,12 @@ export interface SliceFlowConfig {
 export const DEFAULT_CONFIG: SliceFlowConfig = {
 	workDir: ".pi/task",
 	hypothesisCount: 3,
-	prototypeCount: 5,
+	planCount: 2,
+	prototypeCount: 3,
 	attackCount: 3,
 	maxCompileRetries: 2,
-	maxArchitectRetries: 2,
+	maxArchRejudge: 2,
+	maxArchReconsider: 2,
 	maxPlanRetries: 2,
 	maxPrototypeRetries: 2,
 	maxLoopIterations: 5,
@@ -130,6 +154,7 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	// Every gate starts human-in-the-loop; trust is handed over one gate at a
 	// time. `frame` stays human permanently (it is never auto-approved here).
 	autonomy: { frame: "human", architect: "human", prototype: "human", plan: "human", verify: "human" },
+	telemetry: { enabled: false, flushOnPause: true, debug: false },
 	// Defaults name slice-flow's own dedicated agents, bundled in
 	// slice-flow/agents/ and installed into .pi/agents/. There is no
 	// generic-builtin fallback: every phase resolves to a slice-flow-<role> agent.
@@ -175,6 +200,9 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 		// than forcing the cheapest tier onto correctness-critical work.
 		fixup: null,
 		verify: "anthropic/claude-opus-4-8",
+		// Regression-check dims (already passing, re-run only to catch a regressed
+		// fix) run a cheaper tier; the failed dims under repair keep `verify` opus.
+		verifyRegression: "anthropic/claude-sonnet-4-6",
 	},
 };
 
@@ -199,6 +227,8 @@ export function loadConfig(cwd: string): SliceFlowConfig {
 		return {
 			...DEFAULT_CONFIG,
 			...user,
+			autonomy: { ...DEFAULT_CONFIG.autonomy, ...(user.autonomy ?? {}) },
+			telemetry: { ...DEFAULT_CONFIG.telemetry, ...(user.telemetry ?? {}) },
 			agents: { ...DEFAULT_CONFIG.agents, ...(user.agents ?? {}) },
 			models: { ...DEFAULT_CONFIG.models, ...(user.models ?? {}) },
 		};

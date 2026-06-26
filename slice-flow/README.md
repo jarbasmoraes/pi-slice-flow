@@ -232,10 +232,12 @@ session's default model.
 {
   "workDir": "feature-work",
   "hypothesisCount": 3,
-  "prototypeCount": 5,
+  "planCount": 2,
+  "prototypeCount": 3,
   "attackCount": 3,
   "maxCompileRetries": 2,
-  "maxArchitectRetries": 2,
+  "maxArchRejudge": 2,
+  "maxArchReconsider": 2,
   "maxPlanRetries": 2,
   "maxPrototypeRetries": 2,
   "maxLoopIterations": 5,
@@ -246,6 +248,7 @@ session's default model.
   "autoCommit": true,
   "autoApprove": false,
   "gitignoreWorkDir": true,
+  "telemetry": { "enabled": false, "flushOnPause": true, "debug": false },
   "autonomy": {
     "frame": "human",
     "architect": "human",
@@ -268,13 +271,30 @@ session's default model.
     "build": null,
     "review": null,
     "fixup": null,
-    "verify": "anthropic/claude-opus-4-8"
+    "verify": "anthropic/claude-opus-4-8",
+    "verifyRegression": "anthropic/claude-sonnet-4-6"
   }
 }
 ```
 
 Notes:
 
+- `telemetry` enables real Langfuse tracing (off by default). When `enabled`, it
+  also requires `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL`
+  in the environment, else it stays a no-op. It emits one trace per run (stable
+  across `/reload`), one observation per directive carrying real per-agent token
+  cost (`subagent` result `usage`), and a gate-decision score per gate — all via
+  the ingestion REST API, fail-soft (a dead host never blocks a turn).
+- `planCount` (default 2) fans out N independent plan decompositions into
+  `plan-<n>/` candidate dirs and promotes the comparatively-judged winner — the
+  divergence the architect phase has and plan previously lacked. Set it to `1`
+  for the single-planner legacy path.
+- `verifyRegression` is the (cheaper) model for the loop's regression-check
+  verifiers — dimensions already passing, re-run only to catch a regressed fix.
+  The failed dimensions under active repair keep the strong `verify` model.
+- `maxArchRejudge` / `maxArchReconsider` split the old single `maxArchitectRetries`
+  budget so a run of cheap lint re-judges can never starve the expensive attack
+  RECONSIDER full re-run (and vice-versa).
 - `autonomy` is the per-gate trust policy on the path to a zero-touch engineer.
   Each gate is `"human"` (ask) or `"auto"` (trust the phase's own judges and
   advance without asking, even with a UI present). Every gate defaults to

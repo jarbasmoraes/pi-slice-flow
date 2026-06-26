@@ -242,14 +242,20 @@ export function prototypeJudgeBrief(p: Paths, total: number, notes?: string): st
 
 ${total} prototypes live in ${p.prototypes}/proto-1 .. proto-${total}. The frame and architecture are injected. Inspect every prototype's code and README.
 
-Apply the injected prototype-rubric skill. It defines the refute-stance criteria, the per-candidate record you must produce so a human can override your pick, and the required first-line WINNER format.
+Apply the injected prototype-rubric skill. It defines the refute-stance criteria, the per-candidate record you must produce so a human can override your pick, and the required first-line WINNER format. If NO prototype clears the bar, do not anoint a weak winner: make your first line exactly \`WINNER: NONE-ACCEPTABLE\` and give the reasons — the workflow will regenerate the prototypes rather than carry a weak slate into the plan.
 
 Your final answer is saved automatically to ${join(p.prototypes, "JUDGEMENT.md")}.
 
 Do not edit any files.${revisionFooter(notes)}`;
 }
 
-export function planBrief(p: Paths, ui: "none" | "greenfield" | "existing" | null, notes?: string): string {
+export function planBrief(
+	p: Paths,
+	ui: "none" | "greenfield" | "existing" | null,
+	notes?: string,
+	out: { plan: string; slices: string } = { plan: p.plan, slices: p.slices },
+	candidate?: { n: number; total: number },
+): string {
 	const uiInstructions =
 		ui === "greenfield"
 			? `This feature has new (greenfield) UI. The prototype judgement is injected; the plan's UI portions must realize the winning prototype's direction.`
@@ -257,20 +263,42 @@ export function planBrief(p: Paths, ui: "none" | "greenfield" | "existing" | nul
 				? `This feature extends an EXISTING UI. Apply the injected design-guidelines skill and conform strictly to the UI patterns already present in this repository. Do not invent new visual patterns.`
 				: `This feature has no UI work.`;
 
-	return `# Plan the implementation
+	const candidateNote = candidate
+		? `\nYou are decomposition candidate ${candidate.n} of ${candidate.total}. Produce YOUR OWN independent slicing of this work — a different seam ordering, MVP boundary, or risk-first sequence than an obvious default. A separate judge will compare all ${candidate.total} candidates and pick the soundest; do not converge toward the others.\n`
+		: "";
 
+	return `# Plan the implementation
+${candidateNote}
 The frame and approved architecture are injected. Apply the injected slice-rules skill — it defines the slice file format and sizing rules.
 
 ${uiInstructions}
 
 Produce two things:
 
-1. **The plan document** — your final answer, saved automatically to ${p.plan}. It must cover: the implementation approach; code snippets for every critical path (the parts where getting it wrong is expensive); test strategy; and an ordered slice index.
-2. **Slice files** — write each slice with your write tool to ${p.slices}/NNN-<slug>.md (001, 002, ...), following the slice file format from slice-rules exactly. Slice 001 is the smallest WORKING end-to-end MVP of the feature; later slices iterate from that MVP toward the full plan. Size every slice for roughly 100 lines of implementation change.
+1. **The plan document** — your final answer, saved automatically to ${out.plan}. It must cover: the implementation approach; code snippets for every critical path (the parts where getting it wrong is expensive); test strategy; and an ordered slice index.
+2. **Slice files** — write each slice with your write tool to ${out.slices}/NNN-<slug>.md (001, 002, ...), following the slice file format from slice-rules exactly. Slice 001 is the smallest WORKING end-to-end MVP of the feature; later slices iterate from that MVP toward the full plan. Size every slice for roughly 100 lines of implementation change.
 
 Each slice file must be a self-sufficient contract: a builder who sees ONLY that slice file (plus memos of prior slices) must be able to implement it. Never assume the builder has read this plan.
 
-Do not edit project source files — you only write under ${p.slices}/.${revisionFooter(notes, " — address them and rewrite plan and slices")}`;
+Do not edit project source files — you only write under ${out.slices}/.${revisionFooter(notes, " — address them and rewrite plan and slices")}`;
+}
+
+/** The comparative selector over N plan candidates (planCount > 1). Picks the
+ * soundest decomposition and emits a `WINNER: plan-<n>` marker plus a VERDICT on
+ * the winner's soundness, mirroring the architect judge. */
+export function planSelectBrief(p: Paths, total: number): string {
+	return `# Select the best plan decomposition
+
+${total} competing plans live in ${p.root}/plan-1 .. plan-${total}, each with a plan.md and a slices/ directory. The frame and architecture are injected. List and read every candidate's plan.md and all of its slice files before deciding.
+
+Apply the injected plan-rubric skill to each candidate, then choose the SINGLE soundest decomposition. Judge ONLY the decomposition (coverage of the frame, MVP-first ordering, slice sizing, architecture fidelity, forward dependencies) — not code quality or value.
+
+Your first line is exactly \`WINNER: plan-<n>\`, naming the winning directory — nothing before it. Then justify the pick against the rubric dimensions and note any strong idea from a losing candidate worth folding in.
+
+${VERDICT_RULE}
+The verdict is on the WINNER's soundness. Your final answer is saved automatically to ${p.planJudgement}.
+
+Do not edit any files.`;
 }
 
 export function planJudgeBrief(p: Paths): string {

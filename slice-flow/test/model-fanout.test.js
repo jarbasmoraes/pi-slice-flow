@@ -61,9 +61,10 @@ test("hypothesis list assigns a distinct model per architecture angle", () => {
 test("prototype list round-robins (and wraps if shorter than the run count)", () => {
   const { p, state } = workspace();
   const list = ["anthropic/claude-sonnet-4-6", "openai-codex/gpt-5.4"];
-  const d = prototypeDirective(p, state, cfgWith({ prototype: list, prototypeCount: 5 }));
+  // prototypeCount is a top-level config key (default 3), not a models key.
+  const d = prototypeDirective(p, state, { ...cfgWith({ prototype: list }), prototypeCount: 4 });
   const models = d.args.chain[0].parallel.map((t) => t.model);
-  assert.deepEqual(models, [list[0], list[1], list[0], list[1], list[0]]);
+  assert.deepEqual(models, [list[0], list[1], list[0], list[1]]);
 });
 
 test("research list round-robins across the per-question researchers", () => {

@@ -6,7 +6,7 @@
  * answers "what is true on disk?".
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { WORKTREES_DIR } from "./worktree.ts";
 import type { WorktreeInfo } from "./worktree.ts";
@@ -37,11 +37,13 @@ export interface State {
 	phase: Phase;
 	frameStage: FrameStage;
 	compileRetries: number;
-	archRetries: number; // bounded re-judge rounds for the architecture document
+	archRejudgeRetries: number; // bounded CHEAP re-judge rounds (lint fail / human "re-judge only")
+	archReconsiderRetries: number; // bounded EXPENSIVE full re-runs (attack panel RECONSIDER) — separate budget so cheap re-judges can't starve it
 	planRetries: number; // bounded auto-replan rounds when the slice lint/judge fails
 	prototypeRetries: number; // bounded re-judge rounds when the prototype judgement lint fails
 	archApproved: boolean; // gate approval persisted before the UI question (atomicity)
 	archAttacked: boolean; // the attack panel ran on the current winner (run once before the gate)
+	lastAttackedLedgerHash?: string; // sha256 of the ledger the frame attack panel last ran against (skip identical re-attacks)
 	archWinner: string | null; // parsed "WINNER: hypothesis-<id>" marker
 	pending: Directive | null;
 	ui: "none" | "greenfield" | "existing" | null;
@@ -54,11 +56,28 @@ export interface State {
 	// figure only (NOT model tokens; child usage is not exposed at the tool boundary).
 	loopStartTokens: number;
 	loopCost: number; // weighted opus-equivalent spawns accrued in the current loop (enforcement)
+	realInputTokens: number; // real model input tokens summed from subagent usage (0 when unavailable)
+	realOutputTokens: number; // real model output tokens summed from subagent usage
+	realCost: number; // real USD cost summed from subagent usage (0 when unavailable, e.g. async mode)
 	seq: number;
 	codegraphReady: boolean; // a .codegraph/*.db index present at start; gates later codegraph skill injection
-	log: Array<{ ts: string; event: string }>;
+	log: Array<LogEntry>;
+	telemetry?: { traceId: string }; // Langfuse trace id for this run, stable across resume
 	isolation?: { worktree?: WorktreeInfo; disposition?: string };
 }
+
+/** A structured log entry. `event` is the human-readable string (kept verbatim
+ * for every entry so any string reader stays valid); `kind`/`payload` are the
+ * optional machine-readable fields metrics and telemetry key off. Entries
+ * persisted before this field existed simply lack `kind`/`payload`. */
+export interface LogEntry {
+	ts: string;
+	event: string;
+	kind?: LogKind;
+	payload?: unknown;
+}
+
+export type LogKind = "gate" | "retry" | "directive" | "verdict" | "note" | "phase" | "lifecycle";
 
 export interface Paths {
 	root: string;
@@ -187,7 +206,8 @@ export function createState(
 		phase: "frame",
 		frameStage: "intake",
 		compileRetries: 0,
-		archRetries: 0,
+		archRejudgeRetries: 0,
+		archReconsiderRetries: 0,
 		planRetries: 0,
 		prototypeRetries: 0,
 		archApproved: false,
@@ -203,6 +223,9 @@ export function createState(
 		tokensSpent: 0,
 		loopStartTokens: 0,
 		loopCost: 0,
+		realInputTokens: 0,
+		realOutputTokens: 0,
+		realCost: 0,
 		seq: 0,
 		codegraphReady: false,
 		log: [],
@@ -217,8 +240,14 @@ export function loadState(p: Paths): State | null {
 	// was created so a pre-upgrade task resumes instead of crashing on undefined.
 	s.frameStage = s.frameStage ?? "explore";
 	s.compileRetries = s.compileRetries ?? 0;
-	s.archRetries = s.archRetries ?? 0;
+	// archRetries was split into rejudge/reconsider budgets; migrate the old field.
+	const legacyArch = (s as { archRetries?: number }).archRetries;
+	s.archRejudgeRetries = s.archRejudgeRetries ?? legacyArch ?? 0;
+	s.archReconsiderRetries = s.archReconsiderRetries ?? 0;
 	s.loopCost = s.loopCost ?? 0;
+	s.realInputTokens = s.realInputTokens ?? 0;
+	s.realOutputTokens = s.realOutputTokens ?? 0;
+	s.realCost = s.realCost ?? 0;
 	s.planRetries = s.planRetries ?? 0;
 	s.prototypeRetries = s.prototypeRetries ?? 0;
 	s.archApproved = s.archApproved ?? false;
@@ -233,8 +262,39 @@ export function saveState(p: Paths, state: State): void {
 	writeFileSync(p.state, JSON.stringify(state, null, 2), "utf8");
 }
 
-export function logEvent(state: State, event: string): void {
-	state.log.push({ ts: new Date().toISOString(), event });
+export function logEvent(state: State, event: string, kind?: LogKind, payload?: unknown): void {
+	const entry: LogEntry = { ts: new Date().toISOString(), event };
+	if (kind) entry.kind = kind;
+	if (payload !== undefined) entry.payload = payload;
+	state.log.push(entry);
+}
+
+/** The single producer of a gate-decision log line. Every gate writes through
+ * here so the canonical `gate <id>: <decision>` string exists in exactly one
+ * place and carries a structured `{ gate, decision }` payload — no consumer
+ * needs to regex free text, and a reworded human string cannot silently drop a
+ * decision from the override-rate that decides an `auto` flip. */
+export function logGate(state: State, gate: string, decision: string): void {
+	logEvent(state, `gate ${gate}: ${decision}`, "gate", { gate, decision });
+}
+
+/** Log a bounded-retry round with a structured kind, so metrics counts off the
+ * payload rather than phrase-matching the human string. */
+export function logRetry(state: State, retryKind: string, event: string): void {
+	logEvent(state, event, "retry", { retryKind });
+}
+
+/** Append a diagnostics line (unattributed subagent calls, swallowed hook
+ * errors) to a debug log beside the task folders. Never throws — diagnostics
+ * must not perturb the workflow. */
+export function appendTelemetryDebug(cwd: string, workDir: string, entry: Record<string, unknown>): void {
+	try {
+		const dir = tasksContainer(cwd, workDir);
+		mkdirSync(dir, { recursive: true });
+		appendFileSync(join(dir, ".telemetry-debug.jsonl"), `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`, "utf8");
+	} catch {
+		/* diagnostics are best-effort */
+	}
 }
 
 export function isActive(state: State | null): state is State {
@@ -451,6 +511,27 @@ export function prototypeWinnerOf(file: string): string | null {
 	return m ? m[1].toLowerCase() : null;
 }
 
+/** True when the prototype judge declared the whole slate inadequate — its first
+ * line is `WINNER: NONE-ACCEPTABLE` instead of naming a prototype. This is the
+ * reject-all floor: a weak slate triggers a bounded regenerate, never an
+ * auto-adopted winner. Checked on the first line only so prose can't trip it. */
+export function prototypeRejectsAll(file: string): boolean {
+	if (!existsSync(file)) return false;
+	const first = readFileSync(file, "utf8").split(/\r?\n/, 1)[0] ?? "";
+	return /WINNER:\s*NONE-ACCEPTABLE/i.test(first);
+}
+
+/** Remove the proto-<n> directories so a regenerate starts from a clean slate. */
+export function clearPrototypes(p: Paths): void {
+	try {
+		for (const entry of readdirSync(p.prototypes)) {
+			if (/^proto-\d+$/.test(entry)) rmSync(join(p.prototypes, entry), { recursive: true, force: true });
+		}
+	} catch {
+		/* best-effort */
+	}
+}
+
 /** Lint the prototype judgement: a parseable WINNER marker that names a real
  * prototype directory carrying a README. Mechanical only — the taste call is
  * the judge's and the human gate's. */
@@ -525,6 +606,58 @@ export function taskVerdictSummary(p: Paths): Record<string, "PASS" | "FAIL" | n
 export function listSliceFiles(p: Paths): string[] {
 	if (!existsSync(p.slices)) return [];
 	return readdirSync(p.slices).filter((f) => /^\d{3}-.*\.md$/.test(f)).sort();
+}
+
+// --- Plan divergence: competing candidate decompositions (planCount > 1) ------
+
+/** Directory holding one plan candidate (its plan.md + slices/). */
+export function planCandidateDir(p: Paths, n: number): string {
+	return join(p.root, `plan-${n}`);
+}
+
+/** First `WINNER: plan-<n>` marker in the plan selector's judgement; null when absent. */
+export function planWinnerOf(file: string): string | null {
+	if (!existsSync(file)) return null;
+	const m = readFileSync(file, "utf8").match(/WINNER:\s*(plan-\d+)/i);
+	return m ? m[1].toLowerCase() : null;
+}
+
+/** Copy the winning candidate's plan.md and slice files into the canonical
+ * p.plan / p.slices locations the rest of the workflow reads. Returns false when
+ * the candidate's artifacts are missing (caller re-issues). */
+export function promotePlanCandidate(p: Paths, winner: string): boolean {
+	const dir = join(p.root, winner);
+	const planSrc = join(dir, "plan.md");
+	const sliceSrc = join(dir, "slices");
+	if (!existsSync(planSrc) || !existsSync(sliceSrc)) return false;
+	copyFileSync(planSrc, p.plan);
+	mkdirSync(p.slices, { recursive: true });
+	const slices = readdirSync(sliceSrc).filter((f) => /^\d{3}-.*\.md$/.test(f));
+	if (slices.length === 0) return false;
+	for (const f of slices) copyFileSync(join(sliceSrc, f), join(p.slices, f));
+	return true;
+}
+
+/** Remove all plan-<n> candidate dirs (between divergence rounds). */
+export function clearPlanCandidates(p: Paths): void {
+	try {
+		for (const entry of readdirSync(p.root)) {
+			if (/^plan-\d+$/.test(entry)) rmSync(join(p.root, entry), { recursive: true, force: true });
+		}
+	} catch {
+		/* best-effort */
+	}
+}
+
+/** Clear the plan artifacts before a replan/revise. In divergence mode this also
+ * drops the canonical plan + selector judgement + candidate dirs, so the next
+ * round regenerates and re-promotes cleanly rather than reusing a stale winner. */
+export function resetPlanArtifacts(p: Paths, divergent: boolean): void {
+	removeFiles(listSliceFiles(p).map((f) => join(p.slices, f)));
+	if (divergent) {
+		removeFiles([p.plan, p.planJudgement]);
+		clearPlanCandidates(p);
+	}
 }
 
 // --- Slice lint: deterministic structure + ordering checks on the plan output -
@@ -686,12 +819,70 @@ export function observeSubagentCall(p: Paths, input: unknown): void {
  * a child agent's real token spend (system prompt, reads, reasoning) never crosses
  * back through the tool result, so this undercounts by roughly 1-2 orders of
  * magnitude. Loop enforcement uses `state.loopCost` (weighted spawns), not this. */
-export function observeSubagentResult(p: Paths, state: State, input: unknown, content: Array<{ type: string; text?: string }>): void {
+export interface SubagentUsage {
+	input: number;
+	output: number;
+	cost: number;
+}
+
+/** Sum real per-agent token usage + cost from a `subagent` tool result's
+ * `details`. pi-subagents returns `details.results: [{ usage: { input, output,
+ * cost, ... } }]` for foreground runs; an async receipt has an empty `results`
+ * (usage arrives later, out of band), so this returns null and the caller falls
+ * back to the chars/4 estimate. */
+export function sumUsage(details: unknown): SubagentUsage | null {
+	if (!details || typeof details !== "object") return null;
+	const results = (details as { results?: unknown }).results;
+	if (!Array.isArray(results) || results.length === 0) return null;
+	let input = 0;
+	let output = 0;
+	let cost = 0;
+	let seen = false;
+	for (const r of results) {
+		const u = (r as { usage?: { input?: number; output?: number; cost?: number } })?.usage;
+		if (!u) continue;
+		seen = true;
+		input += u.input ?? 0;
+		output += u.output ?? 0;
+		cost += u.cost ?? 0;
+	}
+	return seen ? { input, output, cost } : null;
+}
+
+export function observeSubagentResult(
+	p: Paths,
+	state: State,
+	input: unknown,
+	content: Array<{ type: string; text?: string }>,
+	details?: unknown,
+): void {
+	const text = (content ?? []).map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n");
+	// Persist the returned text for full inspectability (mirrors observeSubagentCall).
+	try {
+		mkdirSync(p.calls, { recursive: true });
+		const file = join(p.calls, `${new Date().toISOString().replace(/[:.]/g, "-")}-subagent-result.json`);
+		writeFileSync(file, JSON.stringify({ ts: new Date().toISOString(), text }, null, 2), "utf8");
+	} catch {
+		/* best-effort persistence */
+	}
+	// Capture a self-reported VERDICT/WINNER even before the engine reads the
+	// on-disk artifact, so the judgement trail is in state.log.
+	const verdict = text.match(/VERDICT:\s*(PASS|FAIL)/i);
+	const winner = text.match(/WINNER:\s*(\S+)/i);
+	if (verdict) logEvent(state, `subagent verdict: ${verdict[1].toUpperCase()}`, "verdict", { verdict: verdict[1].toUpperCase() });
+	else if (winner) logEvent(state, `subagent winner: ${winner[1]}`, "verdict", { winner: winner[1] });
+	// Real token usage when pi-subagents exposes it (foreground); else fall back.
+	const usage = sumUsage(details);
+	if (usage) {
+		state.realInputTokens += usage.input;
+		state.realOutputTokens += usage.output;
+		state.realCost += usage.cost;
+	} else if (details && typeof details === "object" && "asyncId" in (details as object)) {
+		logEvent(state, "usage unavailable: async subagent mode (chars/4 fallback)", "note");
+	}
+	// chars/4 of observed tool I/O — a coarse display fallback (see field comment).
 	const inputChars = JSON.stringify(input ?? {}).length;
-	const outputChars = (content ?? [])
-		.map((c) => (c.type === "text" ? (c.text?.length ?? 0) : 0))
-		.reduce((a, b) => a + b, 0);
-	state.tokensSpent += Math.ceil((inputChars + outputChars) / 4);
+	state.tokensSpent += Math.ceil((inputChars + text.length) / 4);
 	saveState(p, state);
 }
 
@@ -702,8 +893,8 @@ export function statusSummary(p: Paths, state: State): string {
 	if (state.phase === "frame") {
 		parts.push(`frame stage: ${state.frameStage}${state.frameStage === "compile" && state.compileRetries > 0 ? ` (retry ${state.compileRetries})` : ""}`);
 	}
-	if (state.phase === "architect" && (state.archWinner || state.archRetries > 0)) {
-		parts.push(`architect: winner ${state.archWinner ?? "?"}${state.archRetries > 0 ? `, re-judge round ${state.archRetries}` : ""}`);
+	if (state.phase === "architect" && (state.archWinner || state.archRejudgeRetries > 0)) {
+		parts.push(`architect: winner ${state.archWinner ?? "?"}${state.archRejudgeRetries > 0 ? `, re-judge round ${state.archRejudgeRetries}` : ""}`);
 	}
 	if (state.phase === "implement" && state.slices.length > 0) {
 		parts.push(`slice: ${state.slices[state.sliceIndex] ?? "?"} (${state.sliceIndex + 1}/${state.slices.length}, fix-up round ${state.fixupRound})`);
@@ -712,7 +903,8 @@ export function statusSummary(p: Paths, state: State): string {
 		parts.push(`loop: iteration ${state.loopIteration}, cost ~${state.loopCost.toFixed(1)} spawns, failing: ${state.failedDimensions.join(", ")}`);
 	}
 	if (state.pending) parts.push(`awaiting: ${state.pending.label}`);
-	parts.push(`tokens (est): ${state.tokensSpent}`, `state: ${p.state}`);
+	if (state.realCost > 0) parts.push(`cost: $${state.realCost.toFixed(4)} (${state.realInputTokens + state.realOutputTokens} tok)`);
+	parts.push(`io est: ${state.tokensSpent} chars/4`, `state: ${p.state}`);
 	return parts.join(" | ");
 }
 

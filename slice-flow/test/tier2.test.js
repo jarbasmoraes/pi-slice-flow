@@ -196,14 +196,30 @@ test("archAttackMarkerOf parses HOLDS/RECONSIDER and null when absent", () => {
 	assert.equal(archAttackMarkerOf(join(p.root, "nope.md")), null);
 });
 
-test("planDirective is a two-step chain: planner then plan judge", () => {
+test("planDirective with planCount=1 is the single-planner two-step chain", () => {
 	const { p, state } = setup("plan-dir");
 	state.ui = "none";
-	const d = planDirective(p, state, DEFAULT_CONFIG);
+	const d = planDirective(p, state, { ...DEFAULT_CONFIG, planCount: 1 });
 	assert.equal(d.args.chain.length, 2);
 	assert.match(d.args.chain[1].label, /Judge plan/);
 	assert.equal(d.args.chain[1].output, p.planJudgement);
 	assert.equal(d.args.chain[1].skill, "plan-rubric");
+	assert.equal(d.args.chain[0].output, p.plan); // writes the canonical plan directly
+});
+
+test("#12 planDirective with planCount>1 fans out N candidate planners then a selector", () => {
+	const { p, state } = setup("plan-div");
+	state.ui = "none";
+	const d = planDirective(p, state, { ...DEFAULT_CONFIG, planCount: 3 });
+	const [fanout, selector] = d.args.chain;
+	assert.equal(fanout.parallel.length, 3, "3 competing planners");
+	for (let i = 0; i < 3; i++) {
+		assert.match(fanout.parallel[i].output, new RegExp(`plan-${i + 1}/plan\\.md$`), "each writes its own candidate dir");
+	}
+	assert.match(selector.label, /Select best plan/);
+	assert.equal(selector.output, p.planJudgement);
+	// p.plan is promoted by the engine, not produced by the directive.
+	assert.ok(!d.expects.includes(p.plan));
 });
 
 // --- Engine: architecture attack stage --------------------------------------
@@ -247,7 +263,7 @@ test("onArchAttacked with RECONSIDER triggers a bounded full re-run (regenerate 
 	const { p, state } = attackedReady("arch-reconsider", "RECONSIDER");
 	const out = await nextStep(NO_UI, p, DEFAULT_CONFIG, state);
 	assert.equal(state.pending.kind, "architect", "full re-run, not a re-judge of the same hypotheses");
-	assert.equal(state.archRetries, 1);
+	assert.equal(state.archReconsiderRetries, 1);
 	assert.equal(state.archAttacked, false, "will re-attack the regenerated winner");
 	assert.equal(existsSync(p.architecture), false, "stale architecture cleared before re-run");
 	assert.match(out, /RECONSIDER/);
