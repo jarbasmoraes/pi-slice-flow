@@ -379,9 +379,32 @@ export function lintFrame(file: string): FrameLint {
 
 // --- Architecture lint: deterministic structure checks on 02-architecture.md --
 
-export const ARCH_REQUIRED_SECTIONS = ["## Winner", "## Scores", "## Why the losers lost", "## Risks carried forward"] as const;
+export const ARCH_REQUIRED_SECTIONS = [
+	"## Winner",
+	"## Goals & Non-Goals",
+	"## Architecture Overview",
+	"## Components",
+	"## Data Models & Schema Changes",
+	"## Error Handling",
+	"## Alternatives Considered",
+	"## Risks & Mitigations",
+	"## Requirement Traceability",
+	"## Scores",
+] as const;
 
-/** Mechanical checks only — sections, Mermaid diagram, scores table. No banned
+/** True when the body of the `## ` section named `headingText` (without the
+ * `## ` prefix) contains a markdown table row. Heading-scoped: `split(/^## /m)`
+ * drops the prefix and a `### ` subheading is not matched by `^## `, so a
+ * subsection's rows stay inside their parent body. */
+function sectionHasTable(text: string, headingText: string): boolean {
+	const needle = headingText.toLowerCase();
+	const body = text.split(/^## /m).find((s) => s.toLowerCase().startsWith(needle));
+	if (body === undefined) return false;
+	return body.split("\n").some((l) => /^\s*\|.*\|\s*$/.test(l));
+}
+
+/** Mechanical checks only — required sections, two Mermaid diagrams, and a
+ * heading-scoped table under Scores and Requirement Traceability. No banned
  * words: "could" and "might" are correct vocabulary in a Risks section.
  * Substance is judged by the human gate and re-checked downstream (plan gate,
  * slice reviews, verify phase), never here. */
@@ -395,8 +418,11 @@ export function lintArchitecture(file: string): FrameLint {
 			findings.push(`missing required section "${section}"`);
 		}
 	}
-	if (!/```mermaid/.test(text)) findings.push("missing fenced ```mermaid diagram in the Winner section");
-	if (!lines.some((l) => /^\s*\|.*\|\s*$/.test(l))) findings.push('"## Scores" has no markdown table');
+	const mermaidCount = (text.match(/```mermaid/g) ?? []).length;
+	if (mermaidCount < 2) findings.push(`expected >=2 fenced \`\`\`mermaid diagrams, found ${mermaidCount}`);
+	if (!sectionHasTable(text, "Scores")) findings.push('"## Scores" has no markdown table');
+	if (!sectionHasTable(text, "Requirement Traceability"))
+		findings.push('"## Requirement Traceability" has no markdown table');
 	return { ok: findings.length === 0, findings };
 }
 

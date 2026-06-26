@@ -12,6 +12,7 @@ import {
 	archAttackMarkerOf,
 	createState,
 	ensureWorkTree,
+	lintArchitecture,
 	lintPrototype,
 	prototypeWinnerOf,
 	workPaths,
@@ -35,16 +36,40 @@ The winning design.
 graph TD; A-->B;
 \`\`\`
 
+## Goals & Non-Goals
+- Goal: ship it.
+- Non-goal: not that.
+
+## Architecture Overview
+Prose overview of the structure and the main flow.
+\`\`\`mermaid
+sequenceDiagram; A->>B: call;
+\`\`\`
+
+## Components
+- ComponentX — does X (src/x.ts).
+
+## Data Models & Schema Changes
+No database impact.
+
+## Error Handling
+Errors bubble to the caller.
+
+## Alternatives Considered
+- hypothesis-2: more moving parts.
+
+## Risks & Mitigations
+- watch the seam; mitigate with a contract test.
+
+## Requirement Traceability
+| AC | Component |
+| - | - |
+| 1 | ComponentX |
+
 ## Scores
 | hypothesis | fit |
 | - | - |
 | 1 | 5 |
-
-## Why the losers lost
-- hypothesis-2: more moving parts.
-
-## Risks carried forward
-- watch the seam.
 `;
 
 // --- Autonomy gate ----------------------------------------------------------
@@ -102,6 +127,64 @@ test("lintPrototype fails without a WINNER marker and passes when the dir+README
 	mkdirSync(join(p.prototypes, "proto-1"), { recursive: true });
 	writeFileSync(join(p.prototypes, "proto-1", "README.md"), "# proto 1\n");
 	assert.equal(lintPrototype(p).ok, true);
+});
+
+function archFile(slug) {
+	const dir = mkdtempSync(join(tmpdir(), `slice-flow-${slug}-`));
+	return join(dir, "02-architecture.md");
+}
+
+test("lintArchitecture passes a full new-format spec-driven document", () => {
+	const f = archFile("arch-lint-ok");
+	writeFileSync(f, VALID_ARCH);
+	assert.equal(lintArchitecture(f).ok, true);
+});
+
+test("lintArchitecture fails when a required heading is missing", () => {
+	const f = archFile("arch-lint-missing");
+	writeFileSync(f, VALID_ARCH.replace("## Error Handling", "## Whoops"));
+	const r = lintArchitecture(f);
+	assert.equal(r.ok, false);
+	assert.ok(r.findings.some((x) => x.includes("## Error Handling")));
+});
+
+test("lintArchitecture fails with fewer than two mermaid fences", () => {
+	const f = archFile("arch-lint-mermaid");
+	const oneFence = VALID_ARCH.replace("```mermaid\nsequenceDiagram; A->>B: call;\n```", "sequence prose");
+	writeFileSync(f, oneFence);
+	const r = lintArchitecture(f);
+	assert.equal(r.ok, false);
+	assert.ok(r.findings.some((x) => /mermaid/.test(x) && /found 1/.test(x)));
+});
+
+test("lintArchitecture fails when ## Scores has no table", () => {
+	const f = archFile("arch-lint-scores");
+	writeFileSync(f, VALID_ARCH.replace("| hypothesis | fit |\n| - | - |\n| 1 | 5 |", "no table here"));
+	const r = lintArchitecture(f);
+	assert.equal(r.ok, false);
+	assert.ok(r.findings.some((x) => /Scores/.test(x)));
+});
+
+test("lintArchitecture fails when ## Requirement Traceability has no table", () => {
+	const f = archFile("arch-lint-trace");
+	writeFileSync(f, VALID_ARCH.replace("| AC | Component |\n| - | - |\n| 1 | ComponentX |", "no table here"));
+	const r = lintArchitecture(f);
+	assert.equal(r.ok, false);
+	assert.ok(r.findings.some((x) => /Requirement Traceability/.test(x)));
+});
+
+test("lintArchitecture table check is heading-scoped (Scores table does not satisfy Traceability)", () => {
+	// A doc with a Scores table but an empty Requirement Traceability section must fail traceability.
+	const f = archFile("arch-lint-scope");
+	writeFileSync(f, VALID_ARCH.replace("| AC | Component |\n| - | - |\n| 1 | ComponentX |", "just prose, no row"));
+	const r = lintArchitecture(f);
+	assert.equal(r.ok, false);
+	assert.ok(r.findings.some((x) => /Requirement Traceability/.test(x)));
+});
+
+test("lintArchitecture fails for a missing file", () => {
+	const f = archFile("arch-lint-missing-file");
+	assert.equal(lintArchitecture(f).ok, false);
 });
 
 test("archAttackMarkerOf parses HOLDS/RECONSIDER and null when absent", () => {

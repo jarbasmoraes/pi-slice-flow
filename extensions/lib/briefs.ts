@@ -193,9 +193,9 @@ Do not edit any project files.${revisionFooter(notes)}`;
 }
 
 export function architectJudgeBrief(p: Paths, hypothesisCount: number, notes?: string): string {
-	return `# Judge the architecture hypotheses
+	return `# Judge the architecture and compile the design document
 
-The frame document and ${hypothesisCount} competing architecture hypotheses are injected. You are the judge; you do not design, you decide.
+The frame document and ${hypothesisCount} competing architecture hypotheses are injected. You are the judge: you pick the winner and then compile its design into one spec-driven document. You compile the winner's content — you do not invent design.
 
 Score every hypothesis 1-5 on each criterion:
 - **Fit with the frame** — does it solve the stated problem, all of it, and nothing else?
@@ -203,14 +203,22 @@ Score every hypothesis 1-5 on each criterion:
 - **Fit with existing repo patterns** — verify against the actual code, not the hypothesis's own claims.
 - **Reversibility** — how cheaply could this be undone or redirected?
 
-The very first line of your final answer MUST be exactly "WINNER: hypothesis-<id>" naming the winning hypothesis — nothing before it. A mechanical lint parses this marker and the section headings below; deviating fails the document.
+The very first line of your final answer MUST be exactly "WINNER: hypothesis-<id>" naming the winning hypothesis — nothing before it. A mechanical lint parses this marker and the headings below; deviating fails the document.
 
-Your final answer must be the complete architecture document (saved automatically to ${p.architecture}), with these exact markdown headings:
+Your final answer is the complete spec-driven design document (saved automatically to ${p.architecture}). Write it in plain-language prose, and use these exact markdown headings, in this order:
 
-## Winner — name it, and reproduce its full architecture: summary, a fenced \`\`\`mermaid diagram, components, data flow.
-## Scores — a markdown table of all hypotheses against all criteria.
-## Why the losers lost — per losing hypothesis, the decisive weakness in one or two sentences.
-## Risks carried forward — what the winner's "falsify" section says to watch for.
+## Winner — name the winning hypothesis and say in a sentence or two why it won.
+## Goals & Non-Goals — what this design must achieve and what it deliberately will not.
+## Architecture Overview — the prose description of the structure and the main flow, plus EXACTLY TWO labeled Mermaid diagrams (each a fenced \`\`\`mermaid block): first a component/context diagram, then a main-flow sequence diagram.
+## Components — each component, its responsibility, and the file(s) it lives in.
+## Data Models & Schema Changes — first determine database impact using this explicit rule: the design is DB-impacting if and only if it adds a table, alters a schema, or writes a previously read-only entity. If there is no impact, this section is a single sentence saying so (e.g. "No database impact."). If there is impact, include an ER diagram and migration notes.
+## Error Handling — how failures are detected, surfaced, and recovered.
+## Alternatives Considered — per losing hypothesis, the decisive weakness in one or two sentences.
+## Risks & Mitigations — what to watch for (from the winner's "falsify" section) and how to mitigate each.
+## Requirement Traceability — a markdown table with one row per frame acceptance criterion, regenerated from the current frame. Inline each criterion's text and map it to the component(s) that satisfy it.
+## Scores — a markdown table of all hypotheses against all four criteria.
+
+Keep it concise: target roughly 500 lines or fewer. You are compiling the winner's design, not expanding it.
 
 Do not edit any project files.${notes ? `\n\nRevision notes — address these in your judgment and rewrite the full document:\n${notes}` : ""}`;
 }
