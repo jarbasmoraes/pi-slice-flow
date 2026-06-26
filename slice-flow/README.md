@@ -240,7 +240,8 @@ session's default model.
   "maxPrototypeRetries": 2,
   "maxLoopIterations": 5,
   "maxFixupsPerSlice": 2,
-  "loopTokenBudget": 3000000,
+  "loopCostBudget": 30,
+  "modelWeights": { "opus": 1, "sonnet": 0.25, "haiku": 0.08, "default": 0.5 },
   "reverifyAllInLoop": true,
   "autoCommit": true,
   "autoApprove": false,
@@ -291,15 +292,21 @@ Notes:
 - `maxPrototypeRetries` bounds the judge-only re-run when the prototype
   judgement fails its lint (missing `WINNER:` marker, or a winner that names a
   directory with no README).
-- `loopTokenBudget` is enforced best-effort: token use is estimated
-  (chars/4) from observed `subagent` tool IO, counted from the moment phase 6
-  starts.
+- `loopCostBudget` caps phase-6 spend deterministically in "opus-equivalent
+  spawns" rather than tokens: each loop iteration adds one fixer per failed
+  dimension plus one verifier per re-verified dimension, each weighted by its
+  model tier via `modelWeights` (opus 1, sonnet 0.25, haiku 0.08; unknown/null
+  models use `default`). The cost of the next iteration is computed before it is
+  spawned, so the loop stops *before* breaching, not after. This counts the work
+  slice-flow commissions — the only signal available, since a child agent's real
+  token usage is not exposed at the `subagent` tool boundary. (A coarse chars/4
+  I/O figure is still recorded for display, but never enforced on.)
 - `reverifyAllInLoop: true` (default) re-runs all five verification dimensions
   on every loop iteration, not only the failed ones, so a loop fix that
   regresses a previously-passing dimension cannot reach `done` on a stale PASS.
   Set it `false` to re-verify only the failed dimensions (cheaper, but a
-  regression in a passing dimension can slip through). `loopTokenBudget`
-  defaults to 3M to give this 5×-per-iteration verify cost headroom; the loop
+  regression in a passing dimension can slip through). `loopCostBudget`
+  defaults to 30 to give this 5×-per-iteration verify cost headroom; the loop
   clears each re-verified dimension's verdict file first, so a verifier that
   fails to write keeps the loop going rather than passing on stale evidence.
 - `maxPlanRetries` bounds the automatic replan when the deterministic slice

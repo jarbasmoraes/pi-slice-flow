@@ -14,6 +14,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SliceFlowConfig } from "./config.ts";
+import { modelWeight } from "./config.ts";
 import {
 	ARCH_ATTACK_CHARTERS,
 	ATTACK_CHARTERS,
@@ -593,6 +594,20 @@ export function reflectDirective(r: ReflectPaths, cfg: SliceFlowConfig, judge: s
 			chainDir: join(r.chains, `${pad3(seq)}-reflect-${judge}`),
 		},
 	};
+}
+
+/** The weighted spawn cost of the loop iteration `loopDirective` is about to
+ * issue, in opus-equivalent spawns. Resolves each spawn's model exactly as the
+ * directive does (fixers at `models.fixup` index 0; verifiers at `models.verify`
+ * round-robin) so enforcement can never drift from what is actually spawned. */
+export function loopIterationCost(state: State, cfg: SliceFlowConfig): number {
+	const fixCost = state.failedDimensions.length * modelWeight(modelAt(cfg.models.fixup), cfg.modelWeights);
+	const reVerifyCount = cfg.reverifyAllInLoop ? VERIFY_DIMENSIONS.length : state.failedDimensions.length;
+	let verifyCost = 0;
+	for (let i = 0; i < reVerifyCount; i++) {
+		verifyCost += modelWeight(modelAt(cfg.models.verify, i), cfg.modelWeights);
+	}
+	return fixCost + verifyCost;
 }
 
 export function loopDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {

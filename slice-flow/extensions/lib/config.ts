@@ -71,7 +71,18 @@ export interface SliceFlowConfig {
 	maxPrototypeRetries: number;
 	maxLoopIterations: number;
 	maxFixupsPerSlice: number;
-	loopTokenBudget: number;
+	/** Phase-6 loop cost ceiling, denominated in "opus-equivalent spawns" — the
+	 * deterministic quantity slice-flow actually controls. Each loop iteration
+	 * adds (one fixer per failed dim + one verifier per re-verified dim), each
+	 * weighted by its model tier via `modelWeights`. This is NOT a token meter:
+	 * child token usage is not exposed at the `subagent` tool boundary, so the
+	 * budget counts the work commissioned, not the tokens it consumes. */
+	loopCostBudget: number;
+	/** Per-model-family weights used to accrue loop cost. Keys are matched as
+	 * lowercase substrings of the resolved model id ("opus"/"sonnet"/"haiku");
+	 * `default` applies to unknown or session-default (null) models. Values
+	 * roughly track relative $/token across tiers. */
+	modelWeights: Record<string, number>;
 	/** Re-verify ALL dimensions on every loop iteration, not just the failed
 	 * ones, so a fix that regresses a previously-passing dimension cannot reach
 	 * `done` on a stale PASS verdict. Correctness over cost; default true. */
@@ -105,9 +116,13 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	maxPrototypeRetries: 2,
 	maxLoopIterations: 5,
 	maxFixupsPerSlice: 2,
-	// Budget sized for reverifyAllInLoop=true: each iteration re-runs all five
-	// verifiers (strong tier), so ~5 dims × several iterations needs headroom.
-	loopTokenBudget: 3_000_000,
+	// Deterministic spawn-cost ceiling for phase 6 (not a token meter). With
+	// reverifyAllInLoop=true a worst-case iteration is ~5 verifiers + up to 5
+	// fixers at the strong (opus) tier ≈ 10 opus-equivalent spawns, so 30 leaves
+	// room for ~3 such iterations before stopping. maxLoopIterations is the other
+	// (count-based) cap; whichever binds first wins.
+	loopCostBudget: 30,
+	modelWeights: { opus: 1, sonnet: 0.25, haiku: 0.08, default: 0.5 },
 	reverifyAllInLoop: true,
 	autoCommit: true,
 	autoApprove: false,
@@ -162,6 +177,19 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 		verify: "anthropic/claude-opus-4-8",
 	},
 };
+
+/** Weight one spawned agent's cost by its resolved model family. A null/undefined
+ * model (session default) or an unrecognized id falls back to `weights.default`.
+ * Pure and side-effect free so the engine and directives can agree on cost. */
+export function modelWeight(model: string | null | undefined, weights: Record<string, number>): number {
+	const fallback = weights.default ?? 0.5;
+	if (!model) return fallback;
+	const id = model.toLowerCase();
+	for (const [family, w] of Object.entries(weights)) {
+		if (family !== "default" && id.includes(family)) return w;
+	}
+	return fallback;
+}
 
 export function loadConfig(cwd: string): SliceFlowConfig {
 	const file = join(cwd, "slice-flow.json");
