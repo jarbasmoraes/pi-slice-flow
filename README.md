@@ -222,11 +222,32 @@ Gates use Pi's TUI (`select`/`input` dialogs). "Request changes" re-runs the
 phase with your notes appended to the brief. In non-interactive modes (`-p`,
 `--mode json`) gates pause the workflow unless `"autoApprove": true` is set.
 
-## Configuration — `slice-flow.json` (in the project root)
+## Configuration — `slice-flow.json`
 
-All keys optional; defaults shown. Cheap model for discovery and fix-ups,
-strong model for architecture judging and verification; `null` inherits the
-session's default model.
+slice-flow resolves its config from two optional files, layered lowest- to
+highest-precedence:
+
+1. **Built-in defaults** — shown below; always present.
+2. **Global** — `~/.pi/slice-flow.json`. Applies to **every** project; put your
+   standing config here to make it the default everywhere.
+3. **Project** — `<project-root>/slice-flow.json`. Overrides the global for that
+   one repo.
+
+Each layer merges onto the one beneath it **key-by-key**: the nested maps
+(`models`, `agents`, `autonomy`, `telemetry`) merge per-key, so a project can
+retune a single phase without restating the whole object — every other
+top-level key replaces wholesale. A missing file is skipped; a malformed one
+fails loud with its full path. (This mirrors how the web-research extension
+reads `~/.pi/web-research.json` — see [Web research tools](#web-research-tools-extensionsweb-researchts).)
+
+> **Make it the default everywhere.** Drop your config at `~/.pi/slice-flow.json`.
+> To diverge in one repo, add a `slice-flow.json` at that project's root with
+> only the keys you want to change. If a project file sets *every* key it fully
+> shadows the global there, so prefer listing only the overrides.
+
+All keys are optional; **defaults** shown. Cheap model for discovery and
+fix-ups, strong model for architecture judging and verification; `null` inherits
+the session's default model.
 
 ```json
 {
@@ -243,7 +264,11 @@ session's default model.
   "maxLoopIterations": 5,
   "maxFixupsPerSlice": 2,
   "loopCostBudget": 30,
-  "modelWeights": { "opus": 1, "sonnet": 0.25, "haiku": 0.08, "default": 0.5 },
+  "modelWeights": {
+    "opus": 1, "gpt-5.5": 0.5, "sonnet": 0.25, "gpt-5.4-mini": 0.06,
+    "gpt-5.4": 0.3, "gpt-5.3": 0.05, "haiku": 0.08, "qwen": 0.02,
+    "gemma": 0.02, "default": 0.5
+  },
   "reverifyAllInLoop": true,
   "autoCommit": true,
   "autoApprove": false,
@@ -315,8 +340,12 @@ Notes:
 - `loopCostBudget` caps phase-6 spend deterministically in "opus-equivalent
   spawns" rather than tokens: each loop iteration adds one fixer per failed
   dimension plus one verifier per re-verified dimension, each weighted by its
-  model tier via `modelWeights` (opus 1, sonnet 0.25, haiku 0.08; unknown/null
-  models use `default`). The cost of the next iteration is computed before it is
+  model tier via `modelWeights`. Keys match as lowercase substrings of the
+  resolved model id — the Anthropic tiers (`opus` 1, `sonnet` 0.25, `haiku`
+  0.08) plus the hosted/local families the fan-out uses (`gpt-5.5`, `gpt-5.4`,
+  `gpt-5.4-mini`, `gpt-5.3`, `qwen`, `gemma`); unknown/null models use
+  `default`. More-specific keys (e.g. `gpt-5.4-mini`) must precede their prefix
+  (`gpt-5.4`) since the first substring hit wins. The cost of the next iteration is computed before it is
   spawned, so the loop stops *before* breaching, not after. This counts the work
   slice-flow commissions — the only signal available, since a child agent's real
   token usage is not exposed at the `subagent` tool boundary. (A coarse chars/4
@@ -440,7 +469,7 @@ The extension is split by responsibility; each module has one reason to change:
 | `extensions/slice-flow.ts` | composition root: tool, hooks, slash commands | you add a command or hook |
 | `extensions/web-research.ts` | registers `web_search` / `fetch_content` / `get_search_content` (entry only) | you add/rename a research tool |
 | `extensions/lib/web-research/` | Playwright browser, SSRF guard, pluggable search providers, extraction, config | you change search/fetch backends or providers |
-| `extensions/lib/config.ts` | defaults + `slice-flow.json` overlay | you add a knob |
+| `extensions/lib/config.ts` | defaults + global (`~/.pi/slice-flow.json`) + project `slice-flow.json` overlay | you add a knob |
 | `extensions/lib/workspace.ts` | state, paths, all `feature-work/` IO | the on-disk contract changes |
 | `extensions/lib/briefs.ts` | every spawned agent's prompt text (pure strings) | you want agents briefed differently |
 | `extensions/lib/directives.ts` | exact `subagent` args; fresh/clarify/chainDir envelope | the pi-subagents call shape changes |
