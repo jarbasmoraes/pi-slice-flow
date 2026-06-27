@@ -4,6 +4,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+import { DEFAULT_CONFIG } from "../extensions/lib/config.ts";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
 const bundleDir = join(here, "..", "agents");
@@ -98,8 +100,11 @@ test("the same namespaced files exist in .pi/agents/", () => {
   }
 });
 
-test("slice-flow.json agents object points only at namespaced agents", () => {
-  const cfg = JSON.parse(readFileSync(join(repoRoot, "slice-flow.json"), "utf8"));
+test("DEFAULT_CONFIG agents map points only at namespaced agents", () => {
+  // The canonical config that ships with the package. (The active overlay now
+  // lives at ~/.pi/slice-flow.json or a project-local slice-flow.json — both
+  // user-specific and absent on CI, so the repo validates the defaults.)
+  const cfg = DEFAULT_CONFIG;
   const pattern = /^slice-flow-(scout|researcher|builder|oracle-adversary|oracle-judge|planner|reviewer)$/;
   for (const [phase, value] of Object.entries(cfg.agents)) {
     assert.match(value, pattern, `agent for phase ${phase} is not namespaced: ${value}`);
