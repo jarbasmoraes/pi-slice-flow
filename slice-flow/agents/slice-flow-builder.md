@@ -3,6 +3,11 @@ name: slice-flow-builder
 description: slice-flow implementation agent — builds one slice, applies fix-ups, and resolves loop failures with narrow, TDD-first, contract-bound edits.
 thinking: high
 tools: read, grep, find, ls, bash, edit, write
+# No `model:` line by design: build/prototype/fixup inherit the phase model
+# (slice-flow.json) or the session default. fallbackModels is the resilience
+# net so a provider outage on the pinned model doesn't strand the sole writer
+# thread — a code-capable chain, mirroring slice-flow-reviewer.
+fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3-coder-next:latest, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false

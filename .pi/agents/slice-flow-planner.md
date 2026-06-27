@@ -3,6 +3,11 @@ name: slice-flow-planner
 description: slice-flow planner — turns the approved frame and architecture into an ordered plan of small, contract-bound slices.
 thinking: high
 tools: read, grep, find, ls, write
+# No `model:` line by design: the plan phase inherits the phase model
+# (slice-flow.json) or the session default. fallbackModels gives the planner a
+# resilience net when the pinned provider is down — a reasoning chain, mirroring
+# slice-flow-oracle-judge.
+fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false

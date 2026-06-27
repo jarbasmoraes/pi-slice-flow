@@ -2,7 +2,13 @@
 name: slice-flow-scout
 description: slice-flow recon agent — intake checks, frame compilation, and architecture hypotheses. Fast, evidence-first, compresses findings into the requested artifact.
 model: anthropic/claude-haiku-4-5
-fallbackModels: openai-codex/gpt-5.4-mini, openai-codex/gpt-5.3-codex-spark, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
+# Scout is dual-tier: haiku-primary for intake/compile, but the hypothesis phase
+# overrides the model UP to opus (architecture seams are high-leverage — see
+# slice-flow.json / config.ts). An explicit phase model keeps THIS agent's
+# fallbackModels, so the chain must stay capable, not mini-tier — otherwise a
+# strong-model outage on hypothesis would silently drop to a mini model. Leads
+# with a capable general model; mini/local tiers degrade gracefully after.
+fallbackModels: openai-codex/gpt-5.4, openai-codex/gpt-5.4-mini, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
 thinking: medium
 tools: read, grep, find, ls, bash, write
 systemPromptMode: replace

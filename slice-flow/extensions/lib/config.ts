@@ -5,6 +5,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 /** A phase's model spec: a single model applied to every run; OR a list that
@@ -95,9 +96,12 @@ export interface SliceFlowConfig {
 	 * budget counts the work commissioned, not the tokens it consumes. */
 	loopCostBudget: number;
 	/** Per-model-family weights used to accrue loop cost. Keys are matched as
-	 * lowercase substrings of the resolved model id ("opus"/"sonnet"/"haiku");
-	 * `default` applies to unknown or session-default (null) models. Values
-	 * roughly track relative $/token across tiers. */
+	 * lowercase substrings of the resolved model id ("opus"/"sonnet"/"haiku",
+	 * plus the "gpt-5.x"/"qwen"/"gemma" families this config actually fans out
+	 * across); `default` applies to unknown or session-default (null) models.
+	 * More-specific keys (e.g. "gpt-5.4-mini") must be inserted BEFORE their
+	 * prefix ("gpt-5.4") since matching returns the first substring hit in key
+	 * order. Values roughly track relative $/token across tiers. */
 	modelWeights: Record<string, number>;
 	/** Re-verify ALL dimensions on every loop iteration, not just the failed
 	 * ones, so a fix that regresses a previously-passing dimension cannot reach
@@ -146,7 +150,21 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	// room for ~3 such iterations before stopping. maxLoopIterations is the other
 	// (count-based) cap; whichever binds first wins.
 	loopCostBudget: 30,
-	modelWeights: { opus: 1, sonnet: 0.25, haiku: 0.08, default: 0.5 },
+	// Anthropic tiers first, then the hosted gpt-5.x families (mini variants
+	// before their prefix so substring matching resolves them correctly), then
+	// local ollama models (qwen*/gemma*) whose marginal $/token is ~free.
+	modelWeights: {
+		opus: 1,
+		"gpt-5.5": 0.5,
+		sonnet: 0.25,
+		"gpt-5.4-mini": 0.06,
+		"gpt-5.4": 0.3,
+		"gpt-5.3": 0.05,
+		haiku: 0.08,
+		qwen: 0.02,
+		gemma: 0.02,
+		default: 0.5,
+	},
 	reverifyAllInLoop: true,
 	autoCommit: true,
 	autoApprove: false,
@@ -219,20 +237,44 @@ export function modelWeight(model: string | null | undefined, weights: Record<st
 	return fallback;
 }
 
-export function loadConfig(cwd: string): SliceFlowConfig {
-	const file = join(cwd, "slice-flow.json");
-	if (!existsSync(file)) return DEFAULT_CONFIG;
+/** Parse one slice-flow.json overlay. Returns null when the file is absent;
+ * throws a clear, path-qualified error when it exists but is malformed. */
+function readOverlay(file: string): Record<string, unknown> | null {
+	if (!existsSync(file)) return null;
 	try {
-		const user = JSON.parse(readFileSync(file, "utf8"));
-		return {
-			...DEFAULT_CONFIG,
-			...user,
-			autonomy: { ...DEFAULT_CONFIG.autonomy, ...(user.autonomy ?? {}) },
-			telemetry: { ...DEFAULT_CONFIG.telemetry, ...(user.telemetry ?? {}) },
-			agents: { ...DEFAULT_CONFIG.agents, ...(user.agents ?? {}) },
-			models: { ...DEFAULT_CONFIG.models, ...(user.models ?? {}) },
-		};
+		return JSON.parse(readFileSync(file, "utf8"));
 	} catch (err) {
-		throw new Error(`slice-flow.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+		throw new Error(`${file} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
 	}
+}
+
+/** Layer one overlay onto a base config. The nested maps (autonomy/telemetry/
+ * agents/models) merge key-by-key so an overlay can tune a single phase without
+ * restating the whole object; every other top-level key replaces wholesale. */
+function mergeConfig(base: SliceFlowConfig, overlay: Record<string, unknown>): SliceFlowConfig {
+	return {
+		...base,
+		...overlay,
+		autonomy: { ...base.autonomy, ...((overlay.autonomy as Partial<Record<GateName, AutonomyMode>>) ?? {}) },
+		telemetry: { ...base.telemetry, ...((overlay.telemetry as Partial<SliceFlowConfig["telemetry"]>) ?? {}) },
+		agents: { ...base.agents, ...((overlay.agents as Partial<SliceFlowAgents>) ?? {}) },
+		models: { ...base.models, ...((overlay.models as Partial<SliceFlowModels>) ?? {}) },
+	};
+}
+
+/**
+ * Resolve the effective config by layering, lowest precedence first:
+ *   DEFAULT_CONFIG  <  ~/.pi/slice-flow.json (global)  <  <cwd>/slice-flow.json (project)
+ *
+ * The global file makes one config the default across every project; a project
+ * may still override individual keys by dropping its own slice-flow.json.
+ * `homeDir` is injectable so tests can point the global lookup at a temp dir.
+ */
+export function loadConfig(cwd: string, homeDir: string = homedir()): SliceFlowConfig {
+	const globalOverlay = readOverlay(join(homeDir, ".pi", "slice-flow.json"));
+	const projectOverlay = readOverlay(join(cwd, "slice-flow.json"));
+	let cfg = DEFAULT_CONFIG;
+	if (globalOverlay) cfg = mergeConfig(cfg, globalOverlay);
+	if (projectOverlay) cfg = mergeConfig(cfg, projectOverlay);
+	return cfg;
 }
