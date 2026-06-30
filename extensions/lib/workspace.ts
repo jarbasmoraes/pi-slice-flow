@@ -27,6 +27,20 @@ export interface Directive {
 	expects?: string[]; // artifact files this directive must produce (validated on `next`)
 }
 
+/** The per-project profile authored by `slice-flow init` and stored in
+ * `.slice-flow/PROJECT.md`. Each field is one parsed section; injected into the
+ * relevant phase briefs so fresh-context agents inherit this repo's specifics
+ * (see lib/init.ts for parse/load and briefs.ts `projectProfileClause`). */
+export interface ProjectProfile {
+	domain: string;
+	invariants: string;
+	conventions: string;
+	libs: string;
+	riskNotes: string;
+	dod: string;
+	raw: string;
+}
+
 export interface State {
 	version: 1 | 2;
 	feature: string;
@@ -64,6 +78,10 @@ export interface State {
 	/** Confirmed live risk axes from the check-pack manifest (empty when no
 	 * confirmed profile). Drives the plan-judge coverage lens (phase 3). */
 	liveAxes?: string[];
+	/** Per-project profile from `.slice-flow/PROJECT.md` (`slice-flow init`),
+	 * loaded at start and injected into the intake/architect/build/review briefs.
+	 * Undefined when the project has no profile. */
+	projectProfile?: ProjectProfile;
 	/** Model families available as judges at start (always includes "claude";
 	 * adds others whose CLI was probed on PATH). Drives cross-family judge
 	 * routing. Undefined on tasks created before this field existed. */

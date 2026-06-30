@@ -138,7 +138,7 @@ export function logDirective(p: Paths, directive: Directive): void {
 // --- Phase directives ----------------------------------------------------------
 
 export function intakeDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
-	const step = makeBriefStep(p, state, "intake-brief", intakeBrief(p, state.feature));
+	const step = makeBriefStep(p, state, "intake-brief", intakeBrief(p, state.feature, state.projectProfile));
 	return {
 		kind: "intake",
 		seq: state.seq,
@@ -250,7 +250,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 	}
 	const angles = HYPOTHESIS_ANGLES.slice(0, Math.max(1, Math.min(cfg.hypothesisCount, HYPOTHESIS_ANGLES.length)));
 	const parallel = angles.map((a, i) => {
-		const step = makeBriefStep(p, state, `hypothesis-${a.id}-brief`, hypothesisBrief(p, a, notes));
+		const step = makeBriefStep(p, state, `hypothesis-${a.id}-brief`, hypothesisBrief(p, a, notes, state.projectProfile));
 		return {
 			agent: cfg.agents.hypothesis,
 			task: step.task,
@@ -265,7 +265,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 	});
 
 	const hypoPaths = angles.map((a) => join(p.arch, `hypothesis-${a.id}.md`));
-	const judgeStep = makeBriefStep(p, state, "architect-judge-brief", architectJudgeBrief(p, angles.length, notes));
+	const judgeStep = makeBriefStep(p, state, "architect-judge-brief", architectJudgeBrief(p, angles.length, notes, state.projectProfile));
 
 	return {
 		kind: "architect",
@@ -294,7 +294,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
  * mis-judged document costs one strong-model run, not a full fan-out. */
 export function architectJudgeDirective(p: Paths, state: State, cfg: SliceFlowConfig, notes?: string): Directive {
 	const hypos = hypothesisPaths(p);
-	const judgeStep = makeBriefStep(p, state, "architect-rejudge-brief", architectJudgeBrief(p, hypos.length, notes));
+	const judgeStep = makeBriefStep(p, state, "architect-rejudge-brief", architectJudgeBrief(p, hypos.length, notes, state.projectProfile));
 	return {
 		kind: "architect-judge",
 		seq: state.seq,
@@ -444,7 +444,7 @@ export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, note
 	// slices, judged PASS/FAIL. Behaviourally identical to before divergence.
 	if ((cfg.planCount ?? 1) <= 1) {
 		const step = makeBriefStep(p, state, "plan-brief", planBrief(p, state.ui, notes));
-		const judgeStep = makeBriefStep(p, state, "plan-judge-brief", planJudgeBrief(p, liveAxes));
+		const judgeStep = makeBriefStep(p, state, "plan-judge-brief", planJudgeBrief(p, liveAxes, state.projectProfile));
 		return {
 			kind: "plan",
 			seq: state.seq,
@@ -476,7 +476,7 @@ export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, note
 		};
 	});
 	const candidatePlans = candidates.map((_, i) => join(planCandidateDir(p, i + 1), "plan.md"));
-	const selectStep = makeBriefStep(p, state, "plan-select-brief", planSelectBrief(p, cfg.planCount, liveAxes));
+	const selectStep = makeBriefStep(p, state, "plan-select-brief", planSelectBrief(p, cfg.planCount, liveAxes, state.projectProfile));
 	return {
 		kind: "plan",
 		seq: state.seq,
@@ -493,7 +493,7 @@ export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, note
 /** The reviewer step appended to every build and fix-up chain. */
 function reviewStep(p: Paths, state: State, cfg: SliceFlowConfig) {
 	const a = sliceArtifacts(p, state);
-	const step = makeBriefStep(p, state, `${a.sliceId}-review-r${state.fixupRound}-brief`, reviewBrief(a, state.fixupRound));
+	const step = makeBriefStep(p, state, `${a.sliceId}-review-r${state.fixupRound}-brief`, reviewBrief(a, state.fixupRound, state.projectProfile));
 	return {
 		agent: cfg.agents.review,
 		task: step.task,
@@ -509,7 +509,7 @@ function reviewStep(p: Paths, state: State, cfg: SliceFlowConfig) {
 
 export function buildDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
 	const a = sliceArtifacts(p, state);
-	const step = makeBriefStep(p, state, `${a.sliceId}-build-brief`, buildBrief(p, a, cfg.autoCommit));
+	const step = makeBriefStep(p, state, `${a.sliceId}-build-brief`, buildBrief(p, a, cfg.autoCommit, state.projectProfile));
 	return {
 		kind: "build",
 		seq: state.seq,
