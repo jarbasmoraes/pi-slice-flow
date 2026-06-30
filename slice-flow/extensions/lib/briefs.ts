@@ -283,10 +283,25 @@ Each slice file must be a self-sufficient contract: a builder who sees ONLY that
 Do not edit project source files — you only write under ${out.slices}/.${revisionFooter(notes, " — address them and rewrite plan and slices")}`;
 }
 
+/** A risk-coverage clause appended to the plan judge when the project has a
+ * confirmed check-pack profile. The injected risk-taxonomy skill defines each
+ * axis's "touched when" signal; the judge maps that onto the slices and FAILs on
+ * any axis the plan touches but no slice covers — catching a coverage gap at plan
+ * time instead of at the post-build verify gate. Empty axes → empty clause (the
+ * judge behaves exactly as before). */
+export function riskCoverageClause(liveAxes: string[] | undefined): string {
+	if (!liveAxes || liveAxes.length === 0) return "";
+	return `
+
+## Risk-axis coverage (this project's live axes)
+
+The injected risk-taxonomy skill is authoritative. This project's live risk axes are: **${liveAxes.join(", ")}**. For each, use the skill's "Touched when" signal to decide whether the plan touches it. For every axis the plan TOUCHES, confirm a slice covers it — adds or preserves the axis's deterministic check, or otherwise handles the risk in its scope/acceptance criteria. List by stable key any axis that is touched but uncovered; an uncovered touched axis is a decomposition gap and makes the verdict FAIL. Do not flag an axis the plan does not touch, and do not demand a check for an axis already enforced by the shipped check-pack — only that a slice acknowledges and preserves coverage.`;
+}
+
 /** The comparative selector over N plan candidates (planCount > 1). Picks the
  * soundest decomposition and emits a `WINNER: plan-<n>` marker plus a VERDICT on
  * the winner's soundness, mirroring the architect judge. */
-export function planSelectBrief(p: Paths, total: number): string {
+export function planSelectBrief(p: Paths, total: number, liveAxes?: string[]): string {
 	return `# Select the best plan decomposition
 
 ${total} competing plans live in ${p.root}/plan-1 .. plan-${total}, each with a plan.md and a slices/ directory. The frame and architecture are injected. List and read every candidate's plan.md and all of its slice files before deciding.
@@ -294,6 +309,7 @@ ${total} competing plans live in ${p.root}/plan-1 .. plan-${total}, each with a 
 Apply the injected plan-rubric skill to each candidate, then choose the SINGLE soundest decomposition. Judge ONLY the decomposition (coverage of the frame, MVP-first ordering, slice sizing, architecture fidelity, forward dependencies) — not code quality or value.
 
 Your first line is exactly \`WINNER: plan-<n>\`, naming the winning directory — nothing before it. Then justify the pick against the rubric dimensions and note any strong idea from a losing candidate worth folding in.
+${riskCoverageClause(liveAxes)}
 
 ${VERDICT_RULE}
 The verdict is on the WINNER's soundness. Your final answer is saved automatically to ${p.planJudgement}.
@@ -301,12 +317,13 @@ The verdict is on the WINNER's soundness. Your final answer is saved automatical
 Do not edit any files.`;
 }
 
-export function planJudgeBrief(p: Paths): string {
+export function planJudgeBrief(p: Paths, liveAxes?: string[]): string {
 	return `# Judge the plan decomposition
 
 The frame, the winning architecture, and the plan (${p.plan}) are injected. The slice files live under ${p.slices}/ — list and read every one before judging.
 
 Apply the injected plan-rubric skill. It defines the dimensions of decomposition soundness you must refute and the required verdict format. Judge ONLY the decomposition: not code quality, not value, not UI. Deterministic structure (numbering, required sections, forward-dependency syntax) is already linted — do not re-report it.
+${riskCoverageClause(liveAxes)}
 
 ${VERDICT_RULE}
 Your final answer is saved automatically to ${p.planJudgement}.

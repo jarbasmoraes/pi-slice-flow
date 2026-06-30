@@ -42,6 +42,7 @@ import {
 } from "./briefs.ts";
 import { VERIFY_DIMENSIONS, hypothesisPaths, logEvent, nextSeqIn, pad3, planCandidateDir, priorMemoPaths, sliceArtifacts, slugify } from "./workspace.ts";
 import type { Directive, Paths, ReflectPaths, State, VerifyDimension } from "./workspace.ts";
+import { positionSwap, resolveJudge } from "./judge-family.ts";
 
 // --- Worktree isolation --------------------------------------------------------
 
@@ -82,6 +83,17 @@ function modelAt(spec: string | string[] | null, i = 0): string | null {
 function withModel(spec: string | string[] | null, i = 0): { model?: string } {
 	const model = modelAt(spec, i);
 	return model ? { model } : {};
+}
+
+/** Like `withModel`, but for a JUDGE step: routes the model to a different family
+ * than the builders when `judgeFamily: "cross"` and another family is available
+ * (probed at start, recorded on `state.judgeFamilies`), to dodge Claude's
+ * self-preference bias. Degrades to the configured judge when only the host
+ * family is present. A resolved null (session default) means "no override". */
+function judgeModel(cfg: SliceFlowConfig, state: State, spec: string | string[] | null, i = 0): { model?: string } {
+	const base = modelAt(spec, i);
+	const resolved = resolveJudge(base, modelAt(cfg.models.build, 0), new Set(state.judgeFamilies ?? ["claude"]), cfg.judgeFamily ?? "cross");
+	return resolved.model ? { model: resolved.model } : {};
 }
 
 /** The common envelope for every chain directive. */
@@ -224,7 +236,7 @@ export function compileDirective(p: Paths, state: State, cfg: SliceFlowConfig, n
 				// p.frame is (re)written by the compile step before this one launches.
 				reads: [judgeStep.briefPath, p.ledger, p.frame],
 				output: p.frameJudgement,
-				...withModel(cfg.models.frameJudge),
+				...judgeModel(cfg, state, cfg.models.frameJudge),
 			},
 		]),
 	};
@@ -271,7 +283,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 				reads: [judgeStep.briefPath, p.frame, ...hypoPaths],
 				output: p.architecture,
 				outputMode: "file-only",
-				...withModel(cfg.models.architectJudge),
+				...judgeModel(cfg, state, cfg.models.architectJudge),
 			},
 		]),
 	};
@@ -297,7 +309,7 @@ export function architectJudgeDirective(p: Paths, state: State, cfg: SliceFlowCo
 				reads: [judgeStep.briefPath, p.frame, ...hypos],
 				output: p.architecture,
 				outputMode: "file-only",
-				...withModel(cfg.models.architectJudge),
+				...judgeModel(cfg, state, cfg.models.architectJudge),
 			},
 		]),
 	};
@@ -340,7 +352,7 @@ export function archAttackDirective(p: Paths, state: State, cfg: SliceFlowConfig
 				skill: "architecture-attack",
 				reads: [dispoStep.briefPath, p.frame, p.architecture, ...attackPaths],
 				output: p.archDispositions,
-				...withModel(cfg.models.architectJudge),
+				...judgeModel(cfg, state, cfg.models.architectJudge),
 			},
 		]),
 	};
@@ -377,7 +389,7 @@ export function prototypeDirective(p: Paths, state: State, cfg: SliceFlowConfig)
 				skill: "prototype-rubric",
 				reads: [judgeStep.briefPath, p.frame, p.architecture],
 				output: join(p.prototypes, "JUDGEMENT.md"),
-				...withModel(cfg.models.prototypeJudge),
+				...judgeModel(cfg, state, cfg.models.prototypeJudge),
 			},
 		]),
 	};
@@ -402,7 +414,7 @@ export function prototypeJudgeDirective(p: Paths, state: State, cfg: SliceFlowCo
 				skill: "prototype-rubric",
 				reads: [judgeStep.briefPath, p.frame, p.architecture],
 				output: join(p.prototypes, "JUDGEMENT.md"),
-				...withModel(cfg.models.prototypeJudge),
+				...judgeModel(cfg, state, cfg.models.prototypeJudge),
 			},
 		]),
 	};
@@ -414,12 +426,25 @@ export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, note
 	const baseReads = [p.frame, p.architecture];
 	if (state.ui === "greenfield") baseReads.push(join(p.prototypes, "JUDGEMENT.md"));
 	const tag = notes ? `-r${state.planRetries}` : "";
+	// When the project has a confirmed check-pack profile, the plan judge also
+	// gets the risk-taxonomy skill and the live axes, so a touched-but-uncovered
+	// axis FAILs the plan (and feeds the existing replan loop) before any build.
+	const liveAxes = state.liveAxes ?? [];
+	const judgeSkills = liveAxes.length > 0 ? ["plan-rubric", "risk-taxonomy"] : "plan-rubric";
+	// Capture the rotation key BEFORE makeBriefStep mutates state.seq, so the
+	// comparative selector's position-swap is stable within this directive build.
+	const swapSeq = state.seq;
+	// With live axes AND Tier-C generation enabled, the planner also gets the
+	// check-generator playbook so a coverage-driven replan can spec a check-slice
+	// (deterministic check + RED/GREEN fixture acceptance criteria) for an
+	// uncovered axis, rather than re-narrating the risk.
+	if (liveAxes.length > 0 && cfg.checks?.generate) planSkills.push("check-generator");
 
 	// Single-planner legacy path (planCount <= 1): writes the canonical plan +
 	// slices, judged PASS/FAIL. Behaviourally identical to before divergence.
 	if ((cfg.planCount ?? 1) <= 1) {
 		const step = makeBriefStep(p, state, "plan-brief", planBrief(p, state.ui, notes));
-		const judgeStep = makeBriefStep(p, state, "plan-judge-brief", planJudgeBrief(p));
+		const judgeStep = makeBriefStep(p, state, "plan-judge-brief", planJudgeBrief(p, liveAxes));
 		return {
 			kind: "plan",
 			seq: state.seq,
@@ -427,7 +452,7 @@ export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, note
 			expects: [p.plan, p.planJudgement],
 			args: freshChain(p, state.seq, `plan${tag}`, [
 				{ agent: cfg.agents.plan, task: step.task, label: "Write plan and slices", phase: "Plan", skill: planSkills, reads: [step.briefPath, ...baseReads], output: p.plan, ...withModel(cfg.models.plan) },
-				{ agent: cfg.agents.planJudge, task: judgeStep.task, label: "Judge plan decomposition", phase: "Plan", skill: "plan-rubric", reads: [judgeStep.briefPath, p.frame, p.architecture, p.plan], output: p.planJudgement, ...withModel(cfg.models.planJudge) },
+				{ agent: cfg.agents.planJudge, task: judgeStep.task, label: "Judge plan decomposition", phase: "Plan", skill: judgeSkills, reads: [judgeStep.briefPath, p.frame, p.architecture, p.plan], output: p.planJudgement, ...judgeModel(cfg, state, cfg.models.planJudge) },
 			]),
 		};
 	}
@@ -451,7 +476,7 @@ export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, note
 		};
 	});
 	const candidatePlans = candidates.map((_, i) => join(planCandidateDir(p, i + 1), "plan.md"));
-	const selectStep = makeBriefStep(p, state, "plan-select-brief", planSelectBrief(p, cfg.planCount));
+	const selectStep = makeBriefStep(p, state, "plan-select-brief", planSelectBrief(p, cfg.planCount, liveAxes));
 	return {
 		kind: "plan",
 		seq: state.seq,
@@ -460,7 +485,7 @@ export function planDirective(p: Paths, state: State, cfg: SliceFlowConfig, note
 		expects: [p.planJudgement, ...candidatePlans],
 		args: freshChain(p, state.seq, `plan${tag}`, [
 			{ parallel: candidates, concurrency: candidates.length },
-			{ agent: cfg.agents.planJudge, task: selectStep.task, label: "Select best plan", phase: "Plan", skill: "plan-rubric", reads: [selectStep.briefPath, p.frame, p.architecture, ...candidatePlans], output: p.planJudgement, ...withModel(cfg.models.planJudge) },
+			{ agent: cfg.agents.planJudge, task: selectStep.task, label: "Select best plan", phase: "Plan", skill: judgeSkills, reads: [selectStep.briefPath, p.frame, p.architecture, ...positionSwap(candidatePlans, swapSeq)], output: p.planJudgement, ...judgeModel(cfg, state, cfg.models.planJudge) },
 		]),
 	};
 }
@@ -537,7 +562,10 @@ function verifierTask(p: Paths, state: State, cfg: SliceFlowConfig, dim: VerifyD
 		reads: [step.briefPath, p.frame, p.architecture, p.plan],
 		skill: "verify-rubrics",
 		output: join(p.verify, `${dim}.md`),
-		...withModel(isRegression ? cfg.models.verifyRegression : cfg.models.verify, i),
+		// Verifiers refute the builder's own work — the textbook self-preference
+		// site — so they route cross-family too (degrading to the configured model
+		// when only the host family is present).
+		...judgeModel(cfg, state, isRegression ? cfg.models.verifyRegression : cfg.models.verify, i),
 	};
 }
 

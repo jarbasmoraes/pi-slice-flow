@@ -125,6 +125,27 @@ export interface SliceFlowConfig {
 	 * environment, else it stays a no-op. `flushOnPause` ships buffered events
 	 * before a gate pause ends the turn; `debug` logs flush failures. */
 	telemetry: { enabled: boolean; flushOnPause: boolean; debug: boolean };
+	/** Deterministic check-pack: external-oracle gates run with NO model in the
+	 * loop, so they catch blind spots that sit outside the model's correlated
+	 * error space (tests, SAST, secret/dep scanners). `enabled` turns the whole
+	 * gate off; `mode` is "warn" (surface findings at the verify gate but never
+	 * block — quarantine-first default) or "block" (a finding stops the run).
+	 * `oracles` names the Tier-A universal oracles to run; unknown ids are
+	 * skipped, and any oracle whose tool is absent from PATH is a graceful skip,
+	 * never a failure. `generate` allows Tier-C bespoke checks to be authored for a
+	 * live, uncovered axis; an authored check is admitted ONLY after it goes RED on
+	 * a planted-violation fixture and GREEN on the clean tree (`validateCheck`),
+	 * else it is quarantined as a warning. `maxGenRetries` bounds the author→
+	 * validate retry loop. */
+	checks: { enabled: boolean; mode: "warn" | "block"; oracles: string[]; generate: boolean; maxGenRetries: number };
+	/** Self-preference mitigation for the model judges. slice-flow is
+	 * Claude-judging-Claude, and Claude over-rates its own family's output;
+	 * `"cross"` (default) routes a judge to a *different* available model family
+	 * than the builders where one exists (probed at start), and falls back to the
+	 * configured judge + a logged caveat + comparative position-swap when only the
+	 * host family is present. `"same"` disables rerouting (judges keep their
+	 * configured models). */
+	judgeFamily: "cross" | "same";
 	agents: SliceFlowAgents;
 	models: SliceFlowModels;
 }
@@ -173,6 +194,16 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	// time. `frame` stays human permanently (it is never auto-approved here).
 	autonomy: { frame: "human", architect: "human", prototype: "human", plan: "human", verify: "human" },
 	telemetry: { enabled: false, flushOnPause: true, debug: false },
+	// Check-pack on by default but in "warn" mode: findings surface at the verify
+	// gate without blocking, so adopting the feature never breaks an existing run.
+	// A project opts into "block" via slice-flow.json once it trusts the oracles.
+	// All three Tier-A oracles are requested; whichever tools aren't installed are
+	// skipped with a nudge rather than failing.
+	checks: { enabled: true, mode: "warn", oracles: ["secrets", "sast", "deps"], generate: true, maxGenRetries: 2 },
+	// Route judges to a different model family than the builders when one is
+	// available (probed at start), to dodge Claude's confirmed self-preference
+	// bias; degrades to the configured judge + caveat + position-swap otherwise.
+	judgeFamily: "cross",
 	// Defaults name slice-flow's own dedicated agents, bundled in
 	// slice-flow/agents/ and installed into .pi/agents/. There is no
 	// generic-builtin fallback: every phase resolves to a slice-flow-<role> agent.
@@ -257,6 +288,7 @@ function mergeConfig(base: SliceFlowConfig, overlay: Record<string, unknown>): S
 		...overlay,
 		autonomy: { ...base.autonomy, ...((overlay.autonomy as Partial<Record<GateName, AutonomyMode>>) ?? {}) },
 		telemetry: { ...base.telemetry, ...((overlay.telemetry as Partial<SliceFlowConfig["telemetry"]>) ?? {}) },
+		checks: { ...base.checks, ...((overlay.checks as Partial<SliceFlowConfig["checks"]>) ?? {}) },
 		agents: { ...base.agents, ...((overlay.agents as Partial<SliceFlowAgents>) ?? {}) },
 		models: { ...base.models, ...((overlay.models as Partial<SliceFlowModels>) ?? {}) },
 	};
