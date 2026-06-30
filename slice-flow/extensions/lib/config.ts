@@ -138,6 +138,12 @@ export interface SliceFlowConfig {
 	 * else it is quarantined as a warning. `maxGenRetries` bounds the author→
 	 * validate retry loop. */
 	checks: { enabled: boolean; mode: "warn" | "block"; oracles: string[]; generate: boolean; maxGenRetries: number };
+	/** Staleness thresholds for the per-project profile (`.slice-flow/PROJECT.md`,
+	 * `slice-flow init`). When a captured profile is older than EITHER bound, the
+	 * `/feature` start banner nudges the user to refresh it with `/feature-init`.
+	 * Pure visibility — the profile is never auto-edited. `staleAfterCommits` is
+	 * best-effort (skipped on a non-git repo). */
+	profile: { staleAfterDays: number; staleAfterCommits: number };
 	/** Self-preference mitigation for the model judges. slice-flow is
 	 * Claude-judging-Claude, and Claude over-rates its own family's output;
 	 * `"cross"` (default) routes a judge to a *different* available model family
@@ -200,6 +206,9 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	// All three Tier-A oracles are requested; whichever tools aren't installed are
 	// skipped with a nudge rather than failing.
 	checks: { enabled: true, mode: "warn", oracles: ["secrets", "sast", "deps"], generate: true, maxGenRetries: 2 },
+	// A profile drifts as the code moves; nudge to refresh after ~45 days or ~75
+	// commits since it was captured (whichever comes first). Tune per project.
+	profile: { staleAfterDays: 45, staleAfterCommits: 75 },
 	// Route judges to a different model family than the builders when one is
 	// available (probed at start), to dodge Claude's confirmed self-preference
 	// bias; degrades to the configured judge + caveat + position-swap otherwise.
@@ -289,6 +298,7 @@ function mergeConfig(base: SliceFlowConfig, overlay: Record<string, unknown>): S
 		autonomy: { ...base.autonomy, ...((overlay.autonomy as Partial<Record<GateName, AutonomyMode>>) ?? {}) },
 		telemetry: { ...base.telemetry, ...((overlay.telemetry as Partial<SliceFlowConfig["telemetry"]>) ?? {}) },
 		checks: { ...base.checks, ...((overlay.checks as Partial<SliceFlowConfig["checks"]>) ?? {}) },
+		profile: { ...base.profile, ...((overlay.profile as Partial<SliceFlowConfig["profile"]>) ?? {}) },
 		agents: { ...base.agents, ...((overlay.agents as Partial<SliceFlowAgents>) ?? {}) },
 		models: { ...base.models, ...((overlay.models as Partial<SliceFlowModels>) ?? {}) },
 	};

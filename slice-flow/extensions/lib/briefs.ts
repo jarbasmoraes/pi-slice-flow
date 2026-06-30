@@ -5,9 +5,42 @@
  */
 
 import { join } from "node:path";
-import type { Paths, SliceArtifacts, VerifyDimension } from "./workspace.ts";
+import type { Paths, ProjectProfile, SliceArtifacts, VerifyDimension } from "./workspace.ts";
 
 export const VERDICT_RULE = `The very first line of your final answer MUST be exactly "VERDICT: PASS" or "VERDICT: FAIL" — nothing before it.`;
+
+/** Section keys of the per-project profile (.slice-flow/PROJECT.md). */
+export type ProfileSectionKey = "domain" | "invariants" | "conventions" | "libs" | "riskNotes" | "dod";
+
+const PROFILE_LABELS: Record<ProfileSectionKey, string> = {
+	domain: "Domain & vocabulary",
+	invariants: "Architectural invariants & seams",
+	conventions: "Conventions",
+	libs: "Preferred libraries / banned patterns",
+	riskNotes: "Risk model notes",
+	dod: "Definition of done",
+};
+
+/**
+ * A phase-scoped clause embedding the requested sections of the project profile
+ * (authored by `slice-flow init`). Generalizes `riskCoverageClause`: only the
+ * sections a phase needs are injected, and empty/absent profile → "" (the brief
+ * behaves exactly as before). This is the run-time-only context channel that
+ * replaces dumping project context into always-on AGENTS.md/CLAUDE.md.
+ */
+export function projectProfileClause(profile: ProjectProfile | undefined, sections: ProfileSectionKey[]): string {
+	if (!profile) return "";
+	const present = sections.map((k) => ({ k, body: (profile[k] ?? "").trim() })).filter((x) => x.body.length > 0);
+	if (present.length === 0) return "";
+	const body = present.map((x) => `### ${PROFILE_LABELS[x.k]}\n${x.body}`).join("\n\n");
+	return `
+
+## Project profile (this repo's specifics)
+
+Human-confirmed context about THIS codebase (.slice-flow/PROJECT.md). Treat it as binding: honor these invariants, conventions, and definitions. It is context, not a scope expansion — do not build anything it does not require.
+
+${body}`;
+}
 
 export interface HypothesisAngle {
 	id: number;
@@ -26,7 +59,7 @@ const revisionFooter = (notes?: string, extra = "") =>
 
 // --- Frame v2 briefs (intake -> explore -> compile -> validate) ---------------
 
-export function intakeBrief(p: Paths, feature: string): string {
+export function intakeBrief(p: Paths, feature: string, profile?: ProjectProfile): string {
 	return `# Intake check: is this feature description ready to frame?
 
 Feature request: ${feature}
@@ -44,7 +77,7 @@ You are the intake classifier for a feature workflow. The description above is t
    - **Checklist** — one line per checklist item: met or not met, and why.
    - **Questions** — only when the marker is QUESTIONS: a numbered batch of specific questions, each answerable in one sentence. Never more than 6.
 
-Do not edit any project files.`;
+Do not edit any project files.${projectProfileClause(profile, ["domain"])}`;
 }
 
 export function researchBrief(feature: string, question: string, outPath: string): string {
@@ -175,7 +208,7 @@ After the verdict line, list each finding: the document section, the ledger entr
 Do not edit any files.`;
 }
 
-export function hypothesisBrief(p: Paths, a: HypothesisAngle, notes?: string): string {
+export function hypothesisBrief(p: Paths, a: HypothesisAngle, notes?: string, profile?: ProjectProfile): string {
 	return `# Architecture hypothesis ${a.id}: ${a.angle}
 
 The approved frame document is injected. ${a.brief}
@@ -189,10 +222,10 @@ Review the actual codebase before proposing anything. Then produce ONE architect
 5. **Why this is good** — concrete advantages, grounded in the frame and the existing code.
 6. **What would falsify this** — the observations or constraints that would prove this design wrong.
 
-Do not edit any project files.${revisionFooter(notes)}`;
+Do not edit any project files.${projectProfileClause(profile, ["invariants", "domain"])}${revisionFooter(notes)}`;
 }
 
-export function architectJudgeBrief(p: Paths, hypothesisCount: number, notes?: string): string {
+export function architectJudgeBrief(p: Paths, hypothesisCount: number, notes?: string, profile?: ProjectProfile): string {
 	return `# Judge the architecture and compile the design document
 
 The frame document and ${hypothesisCount} competing architecture hypotheses are injected. You are the judge: you pick the winner and then compile its design into one spec-driven document. You compile the winner's content — you do not invent design.
@@ -220,7 +253,7 @@ Your final answer is the complete spec-driven design document (saved automatical
 
 Keep it concise: target roughly 500 lines or fewer. You are compiling the winner's design, not expanding it.
 
-Do not edit any project files.${notes ? `\n\nRevision notes — address these in your judgment and rewrite the full document:\n${notes}` : ""}`;
+Do not edit any project files.${projectProfileClause(profile, ["invariants", "domain"])}${notes ? `\n\nRevision notes — address these in your judgment and rewrite the full document:\n${notes}` : ""}`;
 }
 
 export function prototypeBrief(p: Paths, n: number, total: number): string {
@@ -301,7 +334,7 @@ The injected risk-taxonomy skill is authoritative. This project's live risk axes
 /** The comparative selector over N plan candidates (planCount > 1). Picks the
  * soundest decomposition and emits a `WINNER: plan-<n>` marker plus a VERDICT on
  * the winner's soundness, mirroring the architect judge. */
-export function planSelectBrief(p: Paths, total: number, liveAxes?: string[]): string {
+export function planSelectBrief(p: Paths, total: number, liveAxes?: string[], profile?: ProjectProfile): string {
 	return `# Select the best plan decomposition
 
 ${total} competing plans live in ${p.root}/plan-1 .. plan-${total}, each with a plan.md and a slices/ directory. The frame and architecture are injected. List and read every candidate's plan.md and all of its slice files before deciding.
@@ -309,7 +342,7 @@ ${total} competing plans live in ${p.root}/plan-1 .. plan-${total}, each with a 
 Apply the injected plan-rubric skill to each candidate, then choose the SINGLE soundest decomposition. Judge ONLY the decomposition (coverage of the frame, MVP-first ordering, slice sizing, architecture fidelity, forward dependencies) — not code quality or value.
 
 Your first line is exactly \`WINNER: plan-<n>\`, naming the winning directory — nothing before it. Then justify the pick against the rubric dimensions and note any strong idea from a losing candidate worth folding in.
-${riskCoverageClause(liveAxes)}
+${riskCoverageClause(liveAxes)}${projectProfileClause(profile, ["conventions", "riskNotes"])}
 
 ${VERDICT_RULE}
 The verdict is on the WINNER's soundness. Your final answer is saved automatically to ${p.planJudgement}.
@@ -317,13 +350,13 @@ The verdict is on the WINNER's soundness. Your final answer is saved automatical
 Do not edit any files.`;
 }
 
-export function planJudgeBrief(p: Paths, liveAxes?: string[]): string {
+export function planJudgeBrief(p: Paths, liveAxes?: string[], profile?: ProjectProfile): string {
 	return `# Judge the plan decomposition
 
 The frame, the winning architecture, and the plan (${p.plan}) are injected. The slice files live under ${p.slices}/ — list and read every one before judging.
 
 Apply the injected plan-rubric skill. It defines the dimensions of decomposition soundness you must refute and the required verdict format. Judge ONLY the decomposition: not code quality, not value, not UI. Deterministic structure (numbering, required sections, forward-dependency syntax) is already linted — do not re-report it.
-${riskCoverageClause(liveAxes)}
+${riskCoverageClause(liveAxes)}${projectProfileClause(profile, ["conventions", "riskNotes"])}
 
 ${VERDICT_RULE}
 Your final answer is saved automatically to ${p.planJudgement}.
@@ -331,7 +364,7 @@ Your final answer is saved automatically to ${p.planJudgement}.
 Do not edit any files.`;
 }
 
-export function buildBrief(p: Paths, a: SliceArtifacts, autoCommit: boolean): string {
+export function buildBrief(p: Paths, a: SliceArtifacts, autoCommit: boolean, profile?: ProjectProfile): string {
 	return `# Build ${a.sliceId}
 
 You are a fresh-context builder. Your ONLY contract is the injected slice file ${a.slicePath}. Memos from previously completed slices are injected as READ-ONLY context — they tell you what already exists; never re-do or modify their scope beyond what your slice demands.
@@ -343,10 +376,10 @@ Hard requirements:
 2. Tests first, then implementation, then run the tests and make them pass.
 3. ${autoCommit ? "Commit your work as ONE commit (auto_commit is enabled). Do not push." : "Do NOT commit (auto_commit is disabled); leave changes in the working tree."}
 4. Write your memo to ${a.memoPath} following the memo format in slice-rules. The memo MUST list every changed file${autoCommit ? " and the commit hash" : ""}.
-5. Never touch ${p.root} except to write the memo.`;
+5. Never touch ${p.root} except to write the memo.${projectProfileClause(profile, ["conventions", "libs", "dod"])}`;
 }
 
-export function reviewBrief(a: SliceArtifacts, fixupRound: number): string {
+export function reviewBrief(a: SliceArtifacts, fixupRound: number, profile?: ProjectProfile): string {
 	return `# Review ${a.sliceId}${fixupRound > 0 ? ` (after fix-up round ${fixupRound})` : ""}
 
 You are a fresh-context reviewer. The slice contract and the builder's memo are injected. Apply the injected reviewer-solid skill — it defines the review criteria.
@@ -356,7 +389,7 @@ Inspect the actual changes: the memo lists changed files and commit hash(es); us
 ${VERDICT_RULE}
 After the verdict line, list findings: each with file, line, severity (blocker|major|minor), and reason. PASS is allowed with minor findings; any blocker or major finding means FAIL. Your final answer is saved automatically to ${a.reviewPath}.
 
-You are review-only: do not edit, fix, or commit anything.`;
+You are review-only: do not edit, fix, or commit anything.${projectProfileClause(profile, ["conventions", "libs", "dod"])}`;
 }
 
 export function fixupBrief(a: SliceArtifacts, fixupRound: number, autoCommit: boolean): string {

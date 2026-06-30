@@ -58,6 +58,7 @@ old `.pi/agents/slice-<role>.md` files from prior versions are superseded by the
 | Command | What it does |
 |---|---|
 | `/feature <description>` | Starts the workflow (prompt template). |
+| `/feature-init` | Captures this project's profile into `.slice-flow/PROJECT.md` (drafted by a fresh scout, human-confirmed) and finishes the check-pack manifest. Run once per project; optional. |
 | `/feature-status` | Shows current phase, slice, loop iteration, token estimate. |
 | `/feature-resume` | Continues from persisted state after a restart or `/reload`. |
 | `/feature-reflect [judge]` | Proposes rubric-skill edits from real human-override cases (proposals only; nothing auto-applied). |
@@ -69,6 +70,37 @@ anything itself — with one exception: during the frame **explore** stage it
 becomes the user's framing partner (framing-partner skill) and drives the
 `research` / `attack` / `converge` actions, but still writes no project code
 and no frame document.
+
+## Project context (`/feature-init` + `.slice-flow/PROJECT.md`)
+
+Every spawned agent runs with **fresh context** — it sees only its brief, its
+injected skill, and inherited context files. That independence is the point, but
+it also means a fresh agent is blind to project-specific truths (domain
+vocabulary, architectural invariants, conventions, the local definition of
+"done"). `/feature-init` captures those **once** into a committed
+`.slice-flow/PROJECT.md`, drafted by a read-only scout and human-confirmed in one
+guided pass (the same pass fills and confirms the check-pack manifest holes).
+
+The profile is injected **per phase** into the briefs that need it — domain +
+invariants into the architect, conventions + libraries + definition-of-done into
+the builder/reviewer, domain into intake — generalizing the existing
+`riskCoverageClause` (which already feeds the manifest's live risk axes into the
+plan). This is deliberately **not** `AGENTS.md`/`CLAUDE.md`: those are always-on
+and shared across Pi / Claude Code / Codex, so a profile there would tax every
+session of every tool even when slice-flow isn't running. The slice-flow profile
+costs tokens **only during runs**, is phase-scoped, and is harness-agnostic;
+agents still inherit any general `AGENTS.md` you keep (`inheritProjectContext`).
+
+**Keeping it fresh.** The profile is human prose, so it drifts as the code moves
+(the machine-detected risk axes self-heal via stack re-detection; the prose does
+not). On promote, `/feature-init` stamps a committed `.slice-flow/profile.json`
+with the commit + date it was captured; when a later `/feature` start finds the
+profile older than `profile.staleAfterCommits` (75) or `profile.staleAfterDays`
+(45), it prints a one-line nudge to refresh. Re-running `/feature-init` then
+re-drafts and shows a **section-level diff** at the confirm gate ("Changed:
+Conventions, Risk model notes") so you review the deltas, not the whole document —
+and it overwrites only on your approval. Running `/feature` with no profile at all
+prints a one-line capture tip and proceeds. The profile is never auto-edited.
 
 ## Observability and self-improvement (cross-run)
 
@@ -512,6 +544,7 @@ The extension is split by responsibility; each module has one reason to change:
 | `extensions/lib/gates.ts` | TUI approval gates (narrow `GateContext`) + check-pack confirm | the approval UX changes |
 | `extensions/lib/checks.ts` | check-pack runner: Tier-A oracles + Tier-B stack-check dispatch, result rendering | you add an oracle or change the run/merge contract |
 | `extensions/lib/detect-stack.ts` | stack probe → live risk axes → selected Tier-B checks + `.slice-flow/checks/manifest.json` IO | you add a detectable stack, axis, or template |
+| `extensions/lib/init.ts` | `/feature-init`: scout-drafted `.slice-flow/PROJECT.md` profile (parse/load) + manifest hole-filling/confirm | you change project-profile capture or its sections |
 | `extensions/lib/scanners.ts` | pure deterministic scanners (tenant-predicate, banned-tokens) over read files | you add or tune a scanner's logic |
 | `extensions/lib/judge-family.ts` | cross-family judge routing: family classification, resolver, CLI probe, position-swap | you add a judge family or change self-preference mitigation |
 | `extensions/lib/metrics.ts` | pure cross-run analysis: per-gate override rates, retries, token spend | you change the observability report |

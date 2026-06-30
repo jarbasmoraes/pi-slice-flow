@@ -41,6 +41,7 @@ import type { GateContext } from "./gates.ts";
 import { mergeResults, renderCheckReport, runChecks, runStackChecks } from "./checks.ts";
 import type { CheckResult } from "./checks.ts";
 import { buildManifest, loadManifest, manifestPath, stackPreamble, writeManifest } from "./detect-stack.ts";
+import { loadProjectProfile } from "./init.ts";
 import { resolveJudge } from "./judge-family.ts";
 import {
 	VERIFY_DIMENSIONS,
@@ -1124,6 +1125,12 @@ export function startWorkflow(
 	const auditCwd = isolation?.worktree?.cwd ?? cwd;
 	const manifest = loadManifest(auditCwd);
 	state.liveAxes = manifest?.confirmed ? manifest.axes : [];
+	// Per-project profile (.slice-flow/PROJECT.md from `slice-flow init`). Read
+	// from the main checkout, not the worktree: the profile may be authored but
+	// not yet committed, so a HEAD-branched worktree would not contain it. Feeds
+	// the intake/architect/build/review briefs (briefs.ts projectProfileClause).
+	const profile = loadProjectProfile(cwd);
+	if (profile) state.projectProfile = profile;
 	state.judgeFamilies = judgeFamilies;
 	state.telemetry = { traceId: randomUUID() };
 	logEvent(state, `started: ${state.feature}`, "lifecycle");

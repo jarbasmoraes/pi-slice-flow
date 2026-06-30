@@ -27,7 +27,8 @@ import { Type } from "typebox";
 import { DEFAULT_CONFIG, loadConfig } from "./lib/config.ts";
 import { getTelemetry } from "./lib/telemetry.ts";
 import type { SliceFlowConfig } from "./lib/config.ts";
-import { converge, nextStep, provisionCheckPack, setupWorktree, startAttack, startReflect, startResearch, startWorkflow, stopped } from "./lib/engine.ts";
+import { converge, nextStep, provisionCheckPack, setupWorktree, startAttack, startReflect, startResearch, startWorkflow, stopped, syncBundledAgents } from "./lib/engine.ts";
+import { hasProjectProfile, profileStaleNudge, runInit } from "./lib/init.ts";
 import { detectCodegraph } from "./lib/codegraph.ts";
 import { detectJudgeFamilies } from "./lib/judge-family.ts";
 import { REFLECT_RUBRICS } from "./lib/directives.ts";
@@ -100,6 +101,7 @@ export default function (pi: ExtensionAPI) {
 			"'attack' spawns fresh adversaries against the draft framing, 'converge' compiles the decision ledger into the frame document. " +
 			"Cross-run, read-only: 'metrics' aggregates per-gate override rates, retries, and token spend across all tasks; " +
 			"'reflect' spawns a fresh judge to propose rubric-skill edits from real human-override cases (proposals only, never auto-applied). " +
+			"Project setup: 'init' captures this repo's profile into .slice-flow/PROJECT.md (drafted by a fresh scout, human-confirmed) and finishes the check-pack manifest; run it once via /feature-init. " +
 			"Pass 'slug' to target a specific task; it is required only when more than one task is active. " +
 			"Directives contain exact `subagent` tool arguments that MUST be invoked verbatim.",
 		promptSnippet: "Drive the slice-flow feature workflow (start/next/status/abort; research/attack/converge during frame exploration)",
@@ -109,7 +111,7 @@ export default function (pi: ExtensionAPI) {
 			"During the frame explore stage you act as the framing partner (framing-partner skill): converse with the user, maintain the decision ledger, and use the research/attack/converge actions.",
 		],
 		parameters: Type.Object({
-			action: StringEnum(["start", "next", "status", "abort", "research", "attack", "converge", "metrics", "reflect"] as const),
+			action: StringEnum(["start", "next", "status", "abort", "research", "attack", "converge", "metrics", "reflect", "init"] as const),
 			description: Type.Optional(Type.String({ description: "Feature description (required for action 'start')" })),
 			slug: Type.Optional(
 				Type.String({ description: "Task folder to target (.pi/task/<slug>/). Required when more than one task is active; ignored by 'start'." }),
@@ -146,7 +148,13 @@ export default function (pi: ExtensionAPI) {
 				const checkLine = await provisionCheckPack(ctx, cfg, auditCwd, new Date().toISOString());
 				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies);
 				await getTelemetry(cfg).flush();
-				const startText = checkLine ? `${text}\n${checkLine}` : text;
+				// Profile affordance (UI banner, not the pure startWorkflow preamble):
+				// no profile → first-run capture tip; a captured-but-drifted profile →
+				// staleness nudge to refresh; a fresh profile → nothing.
+				const initTip = hasProjectProfile(ctx.cwd)
+					? await profileStaleNudge(ctx.cwd, baseline, cfg, (c, a, o) => pi.exec(c, a, o))
+					: "Tip: run /feature-init once to capture this project's profile (domain, invariants, conventions) so every phase inherits it instead of rediscovering it.";
+				const startText = [text, checkLine, initTip].filter((s) => s).join("\n");
 				return { content: [{ type: "text", text: startText }], details: { phase: "frame", slug } };
 			}
 
@@ -167,6 +175,19 @@ export default function (pi: ExtensionAPI) {
 				const cfg = loadConfig(ctx.cwd);
 				const text = startReflect(ctx.cwd, cfg, params.judge);
 				return { content: [{ type: "text", text }], details: { judge: params.judge ?? "all" } };
+			}
+
+			// Project-level setup, not task-bound: draft + confirm the per-project
+			// profile (.slice-flow/PROJECT.md) and finish the check-pack manifest.
+			// Two-stage relay keyed off the draft file (see lib/init.ts).
+			if (params.action === "init") {
+				const cfg = loadConfig(ctx.cwd);
+				// init can run before the first /feature, so provision the bundled
+				// agents here too — the scout it dispatches must exist in .pi/agents/.
+				syncBundledAgents(ctx.cwd);
+				const baseline = await gitBaseline(pi);
+				const text = await runInit(ctx, cfg, ctx.cwd, baseline);
+				return { content: [{ type: "text", text }], details: {} };
 			}
 
 			const noTaskHint = "No slice-flow task here. Start one with /feature <description>.";

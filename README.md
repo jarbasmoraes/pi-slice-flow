@@ -153,6 +153,7 @@ pi install -l /path/to/slice-flow     # project scope (writes .pi/settings.json)
 | Command | What it does |
 |---|---|
 | `/feature <description>` | Start a new feature workflow. |
+| `/feature-init` | Capture this project's profile into `.slice-flow/PROJECT.md` (scout-drafted, human-confirmed) and finish the check-pack manifest. Optional, run once per project. |
 | `/feature-status [slug]` | Show phase / slice / loop / token status. |
 | `/feature-resume [slug]` | Continue a task from disk. |
 | `/feature-reflect [judge]` | Mine human-override cases and write **proposed** rubric diffs (never auto-applied). |
@@ -256,7 +257,7 @@ slice-flow/                         The Pi package (the product)
 │                                   net-guard (SSRF), format, types, util
 ├── skills/                         13 SKILL.md rubric/charter/contract files (the tunable judgment surface)
 ├── agents/                         7 slice-flow-* fresh-context subagent definitions
-├── prompts/                        feature.md, feature-reflect.md slash-command templates
+├── prompts/                        feature.md, feature-init.md, feature-reflect.md slash-command templates
 ├── scripts/web-doctor.mjs          Backing script for `npm run web:doctor`
 ├── test/                           41 node:test files
 ├── README.md                       Package-level phase map, layout, provisioning rules

@@ -26,3 +26,8 @@ test("both docs mention the dedicated slice-flow-researcher agent", () => {
   assert.ok(readme.includes("slice-flow-researcher"), "README must mention slice-flow-researcher");
   assert.ok(testPlan.includes("slice-flow-researcher"), "TEST-PLAN must mention slice-flow-researcher");
 });
+
+test("README documents the /feature-init command and the project profile file", () => {
+  assert.ok(readme.includes("/feature-init"), "README must mention the /feature-init command");
+  assert.ok(readme.includes(".slice-flow/PROJECT.md"), "README must mention the .slice-flow/PROJECT.md profile");
+});
