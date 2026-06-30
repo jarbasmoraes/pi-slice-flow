@@ -70,6 +70,16 @@ test("autonomy and agents maps also merge rather than replace wholesale", () => 
   assert.equal(cfg.autonomy.frame, "human", "default autonomy keys remain");
 });
 
+test("the checks map merges key-by-key like the other nested maps", () => {
+  const { cwd, home } = dirs();
+  writeGlobal(home, { checks: { mode: "block" } });
+  writeProject(cwd, { checks: { enabled: false } });
+  const cfg = loadConfig(cwd, home);
+  assert.equal(cfg.checks.enabled, false, "project checks key applies");
+  assert.equal(cfg.checks.mode, "block", "global checks key survives");
+  assert.deepEqual(cfg.checks.oracles, DEFAULT_CONFIG.checks.oracles, "default checks keys remain");
+});
+
 test("a malformed global file throws a path-qualified error", () => {
   const { cwd, home } = dirs();
   mkdirSync(join(home, ".pi"), { recursive: true });
