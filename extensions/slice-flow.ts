@@ -27,8 +27,9 @@ import { Type } from "typebox";
 import { DEFAULT_CONFIG, loadConfig } from "./lib/config.ts";
 import { getTelemetry } from "./lib/telemetry.ts";
 import type { SliceFlowConfig } from "./lib/config.ts";
-import { converge, nextStep, setupWorktree, startAttack, startReflect, startResearch, startWorkflow, stopped } from "./lib/engine.ts";
+import { converge, nextStep, provisionCheckPack, setupWorktree, startAttack, startReflect, startResearch, startWorkflow, stopped } from "./lib/engine.ts";
 import { detectCodegraph } from "./lib/codegraph.ts";
+import { detectJudgeFamilies } from "./lib/judge-family.ts";
 import { REFLECT_RUBRICS } from "./lib/directives.ts";
 import { aggregate, computeTaskMetrics, renderReport } from "./lib/metrics.ts";
 import {
@@ -128,14 +129,25 @@ export default function (pi: ExtensionAPI) {
 				if (!params.description?.trim()) throw new Error("action 'start' requires a non-empty description.");
 				const cfg = loadConfig(ctx.cwd);
 				const baseline = await gitBaseline(pi);
-				const codegraphState = await detectCodegraph(ctx.cwd, (c, a, o) => pi.exec(c, a, o));
+				const judgeFamilies = await detectJudgeFamilies((c, a, o) => pi.exec(c, a, o));
 				if (cfg.gitignoreWorkDir && baseline !== null) ensureGitignored(ctx.cwd, cfg.workDir);
 				const slug = allocateSlug(ctx.cwd, cfg.workDir, params.description.trim());
 				const p = workPaths(ctx.cwd, cfg.workDir, slug);
 				const isolation = await setupWorktree(ctx, (c, a, o) => pi.exec(c, a, o), cfg, ctx.cwd, slug, baseline);
-				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, codegraphState, isolation);
+				// Provision the per-project check-pack against the tree the build/verify
+				// will actually run in (the worktree when isolated), so the manifest and
+				// any human-filled params land where the run reads them.
+				const auditCwd = isolation?.worktree?.cwd ?? ctx.cwd;
+				// Detect codegraph against that same run tree (not ctx.cwd): the worktree
+				// has no checked-in .codegraph/, so reachability is an ancestor walk up to
+				// the repo root — keeping the "ready" announcement honest about what the
+				// build/scout agents can actually query.
+				const codegraphState = await detectCodegraph(auditCwd, (c, a, o) => pi.exec(c, a, o), ctx.cwd);
+				const checkLine = await provisionCheckPack(ctx, cfg, auditCwd, new Date().toISOString());
+				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies);
 				await getTelemetry(cfg).flush();
-				return { content: [{ type: "text", text }], details: { phase: "frame", slug } };
+				const startText = checkLine ? `${text}\n${checkLine}` : text;
+				return { content: [{ type: "text", text: startText }], details: { phase: "frame", slug } };
 			}
 
 			// Cross-run actions aggregate over every task, so they bypass openTask

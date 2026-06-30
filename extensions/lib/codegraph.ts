@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 export type CodegraphState = "ready" | "nudge" | "silent";
 
@@ -40,6 +40,30 @@ export function codegraphIndexExists(cwd: string): boolean {
 	}
 }
 
+/**
+ * Is a codegraph index reachable from `start` by walking up to (and including)
+ * `repoRoot`? The build/verify agents run in a nested worktree
+ * (`<repoRoot>/.pi/worktrees/<slug>/`), and `.codegraph/` is gitignored so it is
+ * never checked into that worktree — the only physical index sits at the repo
+ * root, an ancestor of the worktree. A codegraph CLI that discovers its project
+ * root resolves that ancestor index, so reachability is an ancestor walk, not a
+ * single-dir check. The walk is bounded to within `repoRoot` so a stray
+ * `.codegraph/` elsewhere on disk is never mistaken for this project's index; if
+ * `start` somehow escapes the repo, only `start` itself is checked.
+ */
+export function codegraphIndexReachable(start: string, repoRoot: string): boolean {
+	const top = resolve(repoRoot);
+	let dir = resolve(start);
+	if (dir !== top && !dir.startsWith(top + sep)) return codegraphIndexExists(dir);
+	while (true) {
+		if (codegraphIndexExists(dir)) return true;
+		if (dir === top) return false;
+		const parent = dirname(dir);
+		if (parent === dir) return false; // filesystem root: stop
+		dir = parent;
+	}
+}
+
 /** Pure: the one-time startup line for each state ("" means say nothing). */
 export function codegraphPreamble(cls: CodegraphState): string {
 	switch (cls) {
@@ -53,12 +77,17 @@ export function codegraphPreamble(cls: CodegraphState): string {
 }
 
 /**
- * Probe the project: a `*.db` index under `<cwd>/.codegraph/` means `ready`
- * without touching the CLI. Otherwise ask whether `codegraph` is on PATH;
- * `nudge` when the probe exits 0, `silent` on any non-zero exit or thrown error.
+ * Probe the project from the tree the agents will actually run in (`cwd`): a
+ * `*.db` index reachable by walking up to `repoRoot` means `ready` without
+ * touching the CLI. `repoRoot` defaults to `cwd`, so a non-isolated run is a
+ * single-dir check exactly as before; an isolated run passes the worktree as
+ * `cwd` and the repo root as `repoRoot` so the ancestor index is found (or, if
+ * the worktree ever lives outside the repo, honestly is not). Otherwise ask
+ * whether `codegraph` is on PATH; `nudge` when the probe exits 0, `silent` on
+ * any non-zero exit or thrown error.
  */
-export async function detectCodegraph(cwd: string, exec: ExecProbe): Promise<CodegraphState> {
-	if (codegraphIndexExists(cwd)) return classifyCodegraph(true, false);
+export async function detectCodegraph(cwd: string, exec: ExecProbe, repoRoot: string = cwd): Promise<CodegraphState> {
+	if (codegraphIndexReachable(cwd, repoRoot)) return classifyCodegraph(true, false);
 	let cliOnPath = false;
 	try {
 		const res = await exec("which", ["codegraph"], { timeout: 5000 });

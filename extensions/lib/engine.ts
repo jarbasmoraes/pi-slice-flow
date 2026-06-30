@@ -36,8 +36,12 @@ import { computeTaskMetrics, gatherOverrideCases } from "./metrics.ts";
 import type { OverrideCase } from "./metrics.ts";
 import { codegraphPreamble } from "./codegraph.ts";
 import type { CodegraphState } from "./codegraph.ts";
-import { PAUSE_MSG, askUiShape, gate } from "./gates.ts";
+import { PAUSE_MSG, askCheckPackConfirm, askUiShape, gate } from "./gates.ts";
 import type { GateContext } from "./gates.ts";
+import { mergeResults, renderCheckReport, runChecks, runStackChecks } from "./checks.ts";
+import type { CheckResult } from "./checks.ts";
+import { buildManifest, loadManifest, manifestPath, stackPreamble, writeManifest } from "./detect-stack.ts";
+import { resolveJudge } from "./judge-family.ts";
 import {
 	VERIFY_DIMENSIONS,
 	createState,
@@ -117,6 +121,31 @@ export async function setupWorktree(
 		ctx.ui.notify(`Could not create worktree: ${err instanceof Error ? err.message : String(err)}. Continuing in the current checkout.`, "warning");
 		return undefined;
 	}
+}
+
+/**
+ * Provision the per-project check-pack at workflow start: probe the stack, build
+ * (or refresh) the `.slice-flow/checks/manifest.json` risk profile, and ask the
+ * human to confirm it once. Detection is a heuristic and can be wrong, so a
+ * security profile is NEVER auto-confirmed — confirmation requires an explicit
+ * human "yes" (or a prior confirmation persisted in the manifest). Returns a
+ * one-time startup line (or "" when nothing risk-bearing was detected, so quiet
+ * repos stay quiet and no file is written). Mirrors `setupWorktree`: an engine
+ * function the composition root calls with an interactive `ctx`.
+ */
+export async function provisionCheckPack(ctx: GateContext, cfg: SliceFlowConfig, cwd: string, detectedAt: string): Promise<string> {
+	if (!cfg.checks.enabled) return "";
+	const manifest = buildManifest(cwd, detectedAt);
+	// Only the universal `secrets` axis and no stack checks → nothing project-
+	// specific to confirm; don't litter the repo with a manifest.
+	if (manifest.axes.length <= 1 && manifest.checks.length === 0) return "";
+	const profile = stackPreamble(manifest.axes, manifest.checks);
+	// Confirm once. A prior run's confirmation (preserved by buildManifest) is
+	// honored without re-asking. askCheckPackConfirm never auto-confirms — only an
+	// explicit human "yes" enables a (possibly-wrong) security profile.
+	if (!manifest.confirmed) manifest.confirmed = await askCheckPackConfirm(ctx, profile);
+	writeManifest(cwd, manifest);
+	return manifest.confirmed ? profile : `${profile} (unconfirmed — checks stay quarantined until you confirm in ${manifestPath(cwd)})`;
 }
 
 /** Branch disposition choices offered on completion; the workflow records the
@@ -746,6 +775,38 @@ async function onSliceReviewed(env: Env): Promise<string> {
 }
 
 /** Shared by `verify` and `loop-fix`: read verdicts, finish or keep looping. */
+/**
+ * Run the deterministic check-pack (Tier-A universal oracles) over the audited
+ * tree and persist verify/check-pack.md as provenance. These run with NO model
+ * in the loop, so they catch blind spots a same-family verifier panel shares.
+ * Returns null when checks are disabled or no Exec is available — both are
+ * graceful no-ops that never block, mirroring the worktree `if (env.exec)` guard.
+ */
+async function runCheckPack(env: Env): Promise<CheckResult | null> {
+	const { p, cfg, state, exec } = env;
+	if (!cfg.checks.enabled) return null;
+	mkdirSync(p.verify, { recursive: true });
+	// Audit the worktree when isolated, else the project root the engine runs in.
+	const cwd = state.isolation?.worktree?.cwd ?? process.cwd();
+	// Tier-A universal oracles need a command runner; without one they are a
+	// graceful skip (mirroring the worktree `if (env.exec)` guard).
+	const oracleResult: CheckResult = exec
+		? await runChecks(exec, cwd, cfg.checks.oracles)
+		: { ok: true, findings: [], skipped: ["all oracles (no command runner in this run)"] };
+	// Tier-B stack checks are pure fs scanners — they run with or without an Exec.
+	// Only a human-confirmed profile may enforce: an unconfirmed manifest is
+	// surfaced as a skip so a detection mistake never gates silently.
+	const manifest = loadManifest(cwd);
+	const stackResult: CheckResult = manifest?.confirmed
+		? await runStackChecks(cwd, manifest.checks)
+		: { ok: true, findings: [], skipped: manifest ? ["stack checks (risk profile not yet confirmed — see .slice-flow/checks/manifest.json)"] : [] };
+	const result = mergeResults(oracleResult, stackResult);
+	writeFileSync(join(p.verify, "check-pack.md"), renderCheckReport(result), "utf8");
+	if (result.skipped.length) logEvent(state, `check-pack skipped: ${result.skipped.join(", ")}`);
+	if (!result.ok) logEvent(state, `check-pack FAIL: ${result.findings.length} finding(s)`);
+	return result;
+}
+
 async function onVerified(env: Env): Promise<string> {
 	const { p, cfg, state, pending } = env;
 	const verdicts = readVerifyVerdicts(p);
@@ -756,11 +817,20 @@ async function onVerified(env: Env): Promise<string> {
 	// After a loop iteration, missing verdicts count as failures.
 	const failed = VERIFY_DIMENSIONS.filter((d) => verdicts[d] !== "PASS");
 	if (failed.length === 0) {
+		// Deterministic check-pack runs at the moment the model verifiers would
+		// declare the feature done — the highest-leverage point to catch a blind
+		// spot they jointly missed. In "block" mode a finding stops the run; in
+		// "warn" mode (default) it rides along on the completion gate as a notice.
+		const check = await runCheckPack(env);
+		if (check && !check.ok && cfg.checks.mode === "block") {
+			return stopped(p, state, `check-pack FAILED (block mode): ${check.findings.join("; ")}. See ${join(p.verify, "check-pack.md")}`);
+		}
+		const checkWarn = check && !check.ok ? ` — note: check-pack found ${check.findings.length} issue(s) (warn mode; see ${join(p.verify, "check-pack.md")})` : "";
 		// Completion gate: the 5 refute verifiers are the mechanism; this gate is a
 		// removable overlay. autonomy.verify="auto" (or autoApprove) advances
-		// headless; "human" asks before declaring the feature done.
-		// All 5 dimensions passed, so the artifact is clean by definition (clean=true).
-		const g = await gate(env.ctx, cfg, "Verification clean on all 5 dimensions — accept and finish?", `${p.verify}/`, "verify");
+		// headless; "human" asks before declaring the feature done. A warn-mode
+		// check-pack finding marks the artifact not-clean so the human still sees it.
+		const g = await gate(env.ctx, cfg, `Verification clean on all 5 dimensions — accept and finish?${checkWarn}`, `${p.verify}/`, "verify", checkWarn === "");
 		recordGate(cfg, state, "verify", g.decision);
 		if (g.decision === "pause") return PAUSE_MSG(`${p.verify}/`, state.slug);
 		if (g.decision === "abort") return stopped(p, state, "user aborted at verify completion gate");
@@ -1041,16 +1111,31 @@ export function startWorkflow(
 	cwd: string,
 	codegraphState: CodegraphState = "silent",
 	isolation?: { worktree?: WorktreeInfo },
+	judgeFamilies: string[] = ["claude"],
 ): string {
 	syncBundledAgents(cwd);
 	preflightAgents(cwd, cfg);
 	ensureWorkTree(p);
 	const state = createState(feature, slug, baselineCommit, isolation);
 	state.codegraphReady = codegraphState === "ready";
+	// Surface the confirmed check-pack risk profile to the plan judge (phase 3):
+	// a confirmed manifest's live axes become the coverage lens; an unconfirmed or
+	// absent profile leaves liveAxes empty (the judge runs exactly as before).
+	const auditCwd = isolation?.worktree?.cwd ?? cwd;
+	const manifest = loadManifest(auditCwd);
+	state.liveAxes = manifest?.confirmed ? manifest.axes : [];
+	state.judgeFamilies = judgeFamilies;
 	state.telemetry = { traceId: randomUUID() };
 	logEvent(state, `started: ${state.feature}`, "lifecycle");
 	getTelemetry(cfg).trace({ id: state.telemetry.traceId, name: feature, sessionId: slug, metadata: { phase: state.phase, slug } });
 	const cgLine = codegraphPreamble(codegraphState);
+	// One-time self-preference caveat, logged for provenance (not surfaced in the
+	// start banner: in the common Claude-only case it would fire on every run).
+	// When cross-family judging is wanted but only the host family is present,
+	// record that the bias is mitigated by position-swap alone.
+	const at0 = (s: SliceFlowConfig["models"]["verify"]) => (Array.isArray(s) ? (s[0] ?? null) : s);
+	const judgeCaveat = resolveJudge(at0(cfg.models.verify), at0(cfg.models.build), new Set(judgeFamilies), cfg.judgeFamily ?? "cross").caveat;
+	if (judgeCaveat) logEvent(state, `judge family: ${judgeCaveat}`);
 	return issue(
 		p,
 		state,

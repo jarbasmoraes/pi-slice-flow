@@ -61,6 +61,13 @@ export interface State {
 	realCost: number; // real USD cost summed from subagent usage (0 when unavailable, e.g. async mode)
 	seq: number;
 	codegraphReady: boolean; // a .codegraph/*.db index present at start; gates later codegraph skill injection
+	/** Confirmed live risk axes from the check-pack manifest (empty when no
+	 * confirmed profile). Drives the plan-judge coverage lens (phase 3). */
+	liveAxes?: string[];
+	/** Model families available as judges at start (always includes "claude";
+	 * adds others whose CLI was probed on PATH). Drives cross-family judge
+	 * routing. Undefined on tasks created before this field existed. */
+	judgeFamilies?: string[];
 	log: Array<LogEntry>;
 	telemetry?: { traceId: string }; // Langfuse trace id for this run, stable across resume
 	isolation?: { worktree?: WorktreeInfo; disposition?: string };
@@ -228,6 +235,8 @@ export function createState(
 		realCost: 0,
 		seq: 0,
 		codegraphReady: false,
+		liveAxes: [],
+		judgeFamilies: ["claude"],
 		log: [],
 		isolation,
 	};
@@ -254,6 +263,8 @@ export function loadState(p: Paths): State | null {
 	s.archAttacked = s.archAttacked ?? false;
 	s.archWinner = s.archWinner ?? null;
 	s.codegraphReady = s.codegraphReady ?? false;
+	s.liveAxes = s.liveAxes ?? [];
+	s.judgeFamilies = s.judgeFamilies ?? ["claude"];
 	return s;
 }
 

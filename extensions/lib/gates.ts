@@ -57,6 +57,21 @@ export async function askUiShape(ctx: GateContext, cfg: SliceFlowConfig): Promis
 	return choice.startsWith("No UI") ? "none" : choice.startsWith("New UI") ? "greenfield" : "existing";
 }
 
+/**
+ * One-time confirm for the detected check-pack risk profile. Deliberately does
+ * NOT honor `autoApprove`/`autonomy`: detection is a heuristic and a security
+ * profile must only be enabled by an explicit human "yes". A headless run leaves
+ * it unconfirmed (checks stay quarantined as warnings); a project enables
+ * headless enforcement by committing a manifest with `"confirmed": true`.
+ * Returns false when there is no UI or the dialog is dismissed.
+ */
+export async function askCheckPackConfirm(ctx: GateContext, profile: string): Promise<boolean> {
+	if (!ctx.hasUI) return false;
+	ctx.ui.notify("Review the detected risk profile before enabling check-pack gates.", "info");
+	const choice = await ctx.ui.select(`Check-pack risk profile detected. ${profile} Enable these deterministic gates for this project?`, ["Enable check-pack", "Not now"]);
+	return choice === "Enable check-pack";
+}
+
 export const PAUSE_MSG = (artifact: string, slug?: string) =>
 	`PAUSED awaiting human approval of ${artifact}. No approval was captured (no interactive UI, or the dialog was dismissed). ` +
 	`Tell the user to review the document and then either call slice_flow({"action":"next"${slug ? `,"slug":"${slug}"` : ""}}) again in an interactive session, ` +
