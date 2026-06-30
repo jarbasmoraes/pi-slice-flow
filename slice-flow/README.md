@@ -274,6 +274,8 @@ the session's default model.
   "autoApprove": false,
   "gitignoreWorkDir": true,
   "telemetry": { "enabled": false, "flushOnPause": true, "debug": false },
+  "checks": { "enabled": true, "mode": "warn", "oracles": ["secrets", "sast", "deps"], "generate": true, "maxGenRetries": 2 },
+  "judgeFamily": "cross",
   "autonomy": {
     "frame": "human",
     "architect": "human",
@@ -310,6 +312,38 @@ Notes:
   across `/reload`), one observation per directive carrying real per-agent token
   cost (`subagent` result `usage`), and a gate-decision score per gate — all via
   the ingestion REST API, fail-soft (a dead host never blocks a turn).
+- `checks` is the **deterministic check-pack** — external-oracle gates that run
+  with *no model in the loop*, so they catch blind spots a same-family judge panel
+  structurally shares (the lever that, in a backtest, caught a real cross-tenant
+  data-leak P0 that escaped model review). It has two tiers:
+  - **Tier A — universal oracles** (`oracles`, default `secrets`/`sast`/`deps`):
+    `gitleaks`, `semgrep p/owasp-top-ten`, `osv-scanner`, run over the audited tree
+    at the verify gate. Each is probed on PATH first; a missing tool is a graceful
+    skip with a nudge, never a failure, so enabling the feature never breaks a run.
+  - **Tier B — stack-templated checks**: at `start`, slice-flow probes the repo
+    (`package.json`, lockfiles, compose) to infer the live **risk axes** (see the
+    `risk-taxonomy` skill), selects applicable templated scanners (e.g.
+    `tenant-predicate`, `banned-tokens`), and writes a `.slice-flow/checks/manifest.json`
+    risk profile. Because detection is a heuristic, the profile enforces only after
+    a **one-time human confirm** — `autoApprove` cannot silently enable it; headless
+    enforcement is opt-in by committing a manifest with `"confirmed": true`. A check
+    whose params can't be inferred (e.g. a project's tenant labels) is quarantined
+    until filled, surfaced as a skip — never a silent pass.
+
+  `mode` is `"warn"` (default — findings ride along on the verify gate as a notice,
+  never blocking) or `"block"` (a finding stops the run). `enabled: false` turns the
+  whole pack off. `generate` (default true) allows **Tier-C** bespoke checks: the
+  planner gets the `check-generator` skill so a coverage-driven replan can spec a
+  check-slice, and any authored check is admitted only if it goes **RED on a
+  planted-violation fixture and GREEN on the clean tree** (`validateCheck`), else it
+  is quarantined as a warning.
+- `judgeFamily` mitigates Claude's confirmed **self-preference bias** (Claude
+  over-rates its own family's output, and slice-flow is Claude-judging-Claude end to
+  end). `"cross"` (default) probes for a non-Claude model CLI at start and routes the
+  frame/architecture/plan/verify judges to a *different* family than the builders
+  where one exists; it degrades cleanly to the configured judge + a logged caveat +
+  **position-swap** (deterministic candidate-order rotation that cancels first-
+  position bias) when only the host family is present. `"same"` disables rerouting.
 - `planCount` (default 2) fans out N independent plan decompositions into
   `plan-<n>/` candidate dirs and promotes the comparatively-judged winner — the
   divergence the architect phase has and plan previously lacked. Set it to `1`
@@ -397,6 +431,8 @@ Notes:
 | `slice-rules` | planner, builders, fix-ups | **your slice contract** (see marker below), slice file format, memo format |
 | `reviewer-solid` | phase 4 reviewers | SOLID, DRY, cohesion, domain isolation, docs standards, verdict format |
 | `verify-rubrics` | phase 5/6 verifiers | one refutation rubric per dimension |
+| `risk-taxonomy` | check-pack detection + plan-judge coverage lens + generator | the catalog of risk axes (key / live-when / touched-when / deterministic check), with a per-project OWNER RULES override block |
+| `check-generator` | planner/builder authoring a check-slice (Tier-C) | how to author a deterministic check + planted-violation fixture for a live, uncovered axis; admitted only RED-on-fixture / GREEN-on-clean |
 
 ## Web research tools (`extensions/web-research.ts`)
 
@@ -473,7 +509,11 @@ The extension is split by responsibility; each module has one reason to change:
 | `extensions/lib/workspace.ts` | state, paths, all `feature-work/` IO | the on-disk contract changes |
 | `extensions/lib/briefs.ts` | every spawned agent's prompt text (pure strings) | you want agents briefed differently |
 | `extensions/lib/directives.ts` | exact `subagent` args; fresh/clarify/chainDir envelope | the pi-subagents call shape changes |
-| `extensions/lib/gates.ts` | TUI approval gates (narrow `GateContext`) | the approval UX changes |
+| `extensions/lib/gates.ts` | TUI approval gates (narrow `GateContext`) + check-pack confirm | the approval UX changes |
+| `extensions/lib/checks.ts` | check-pack runner: Tier-A oracles + Tier-B stack-check dispatch, result rendering | you add an oracle or change the run/merge contract |
+| `extensions/lib/detect-stack.ts` | stack probe → live risk axes → selected Tier-B checks + `.slice-flow/checks/manifest.json` IO | you add a detectable stack, axis, or template |
+| `extensions/lib/scanners.ts` | pure deterministic scanners (tenant-predicate, banned-tokens) over read files | you add or tune a scanner's logic |
+| `extensions/lib/judge-family.ts` | cross-family judge routing: family classification, resolver, CLI probe, position-swap | you add a judge family or change self-preference mitigation |
 | `extensions/lib/metrics.ts` | pure cross-run analysis: per-gate override rates, retries, token spend | you change the observability report |
 | `extensions/lib/engine.ts` | the phase state machine + cross-run reflect entry point | phase order/transitions change |
 
