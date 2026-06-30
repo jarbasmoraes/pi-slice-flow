@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { classifyCodegraph, codegraphIndexExists, codegraphPreamble, detectCodegraph } from "../extensions/lib/codegraph.ts";
+import { classifyCodegraph, codegraphIndexExists, codegraphIndexReachable, codegraphPreamble, detectCodegraph } from "../extensions/lib/codegraph.ts";
 import { createState, loadState, workPaths } from "../extensions/lib/workspace.ts";
 
 test("classifyCodegraph maps the three states", () => {
@@ -32,6 +32,51 @@ test("codegraphIndexExists detects any *.db under .codegraph/ (real-world codegr
   assert.equal(codegraphIndexExists(cwd), false, "empty .codegraph dir -> false");
   writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "");
   assert.equal(codegraphIndexExists(cwd), true, "codegraph.db present -> true");
+});
+
+test("codegraphIndexReachable finds an ancestor index from a nested worktree", () => {
+  const root = mkdtempSync(join(tmpdir(), "slice-flow-cg-reach-"));
+  mkdirSync(join(root, ".codegraph"), { recursive: true });
+  writeFileSync(join(root, ".codegraph", "codegraph.db"), "");
+  // The build agents run here: <root>/.pi/worktrees/<slug>/ — no .codegraph of its own.
+  const worktree = join(root, ".pi", "worktrees", "my-slug");
+  mkdirSync(worktree, { recursive: true });
+  assert.equal(codegraphIndexExists(worktree), false, "worktree has no index of its own");
+  assert.equal(codegraphIndexReachable(worktree, root), true, "ancestor index is reachable up to repo root");
+});
+
+test("codegraphIndexReachable stays within repoRoot and ignores a stray ancestor index", () => {
+  const outer = mkdtempSync(join(tmpdir(), "slice-flow-cg-stray-"));
+  // A .codegraph above the repo root must NOT count as this project's index.
+  mkdirSync(join(outer, ".codegraph"), { recursive: true });
+  writeFileSync(join(outer, ".codegraph", "codegraph.db"), "");
+  const repoRoot = join(outer, "repo");
+  const worktree = join(repoRoot, ".pi", "worktrees", "my-slug");
+  mkdirSync(worktree, { recursive: true });
+  assert.equal(codegraphIndexReachable(worktree, repoRoot), false, "walk stops at repoRoot, stray index ignored");
+});
+
+test("codegraphIndexReachable with repoRoot === start is a single-dir check", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "slice-flow-cg-single-"));
+  assert.equal(codegraphIndexReachable(cwd, cwd), false);
+  mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+  writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "");
+  assert.equal(codegraphIndexReachable(cwd, cwd), true);
+});
+
+test("detectCodegraph resolves ready from a worktree when the repo-root index is an ancestor", async () => {
+  const root = mkdtempSync(join(tmpdir(), "slice-flow-cg-wt-ready-"));
+  mkdirSync(join(root, ".codegraph"), { recursive: true });
+  writeFileSync(join(root, ".codegraph", "codegraph.db"), "");
+  const worktree = join(root, ".pi", "worktrees", "my-slug");
+  mkdirSync(worktree, { recursive: true });
+  let called = false;
+  const exec = async () => {
+    called = true;
+    return { code: 0 };
+  };
+  assert.equal(await detectCodegraph(worktree, exec, root), "ready");
+  assert.equal(called, false, "ancestor index found -> CLI probe not consulted");
 });
 
 test("detectCodegraph resolves ready when a .codegraph/*.db index exists (exec not consulted)", async () => {
