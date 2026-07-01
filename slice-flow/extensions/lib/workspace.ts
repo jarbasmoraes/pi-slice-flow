@@ -377,12 +377,25 @@ export function resolveActiveTask(cwd: string, workDir: string, slug?: string): 
 	return { kind: "none" };
 }
 
-/** A free slug folder for a new task: slugify the feature, suffix on collision. */
-export function allocateSlug(cwd: string, workDir: string, feature: string): string {
+/** Render a Date as `yyyy-mm-dd_HHmmss` in local time, each field zero-padded. */
+function formatTaskStamp(date: Date): string {
+	const p = (n: number) => String(n).padStart(2, "0");
+	return (
+		`${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}` +
+		`_${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}`
+	);
+}
+
+/** A free slug folder for a new task: timestamp-prefixed slugified feature, advancing on collision. */
+export function allocateSlug(cwd: string, workDir: string, feature: string, now: Date = new Date()): string {
 	const root = tasksContainer(cwd, workDir);
 	const base = slugify(feature);
-	let slug = base;
-	for (let n = 2; existsSync(join(root, slug)); n++) slug = `${base}-${n}`;
+	let stamp = new Date(now.getTime());
+	let slug = `${formatTaskStamp(stamp)}_${base}`;
+	while (existsSync(join(root, slug))) {
+		stamp = new Date(stamp.getTime() + 1000);
+		slug = `${formatTaskStamp(stamp)}_${base}`;
+	}
 	return slug;
 }
 
