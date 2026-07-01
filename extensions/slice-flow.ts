@@ -320,7 +320,7 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Slash commands --------------------------------------------------------
 	pi.registerCommand("feature-status", {
-		description: "Show slice-flow tasks and their phase (optionally: /feature-status <slug>)",
+		description: "Show slice-flow tasks and their phase; copy a task's exact name to target it (optionally: /feature-status <name>)",
 		handler: async (args, ctx) => {
 			const cfg = loadConfig(ctx.cwd);
 			const want = args.trim();
@@ -340,7 +340,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("feature-resume", {
-		description: "Resume a slice-flow task from persisted state (optionally: /feature-resume <slug>)",
+		description: "Resume a slice-flow task from persisted state; copy the exact task name from /feature-status (optionally: /feature-resume <name>)",
 		handler: async (args, ctx) => {
 			const cfg = loadConfig(ctx.cwd);
 			const want = args.trim();
