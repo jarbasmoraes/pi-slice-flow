@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GateName, SliceFlowConfig } from "./config.ts";
 import { getTelemetry } from "./telemetry.ts";
+import { getTodoist } from "./todoist.ts";
 import {
 	REFLECT_RUBRICS,
 	archAttackDirective,
@@ -121,6 +122,36 @@ export async function setupWorktree(
 	} catch (err) {
 		ctx.ui.notify(`Could not create worktree: ${err instanceof Error ? err.message : String(err)}. Continuing in the current checkout.`, "warning");
 		return undefined;
+	}
+}
+
+/**
+ * Push MVP for the Todoist integration: when Todoist is enabled and a UI is
+ * present, prompt for a destination project and create the run's tracking task
+ * in its "Frame" section before the frame is approved. Returns null (and makes
+ * no Composio call) with no UI, when Todoist is disabled, when the client is a
+ * no-op, on a blank/cancelled prompt, or on any failure creating the task —
+ * fail-soft end to end, mirroring setupWorktree. Nothing is persisted here;
+ * the caller threads the result into startWorkflow.
+ */
+export async function setupTodoistStart(
+	ctx: GateContext,
+	cfg: SliceFlowConfig,
+	exec: Exec,
+	featureTitle: string,
+): Promise<{ taskId: string; project: string; sectionMode: "sections" | "comment-only" } | null> {
+	if (!ctx.hasUI || cfg.todoist?.enabled !== true) return null;
+	try {
+		const client = getTodoist(cfg, exec);
+		if (!client.enabled) return null;
+		const project = await ctx.ui.input("Todoist project for this run?", "Project name/id to track this run, blank to skip Todoist");
+		if (!project || !project.trim()) return null;
+		const trimmed = project.trim();
+		const taskId = await client.createTask({ project: trimmed, section: "Frame", content: featureTitle });
+		if (!taskId) return null;
+		return { taskId, project: trimmed, sectionMode: "sections" };
+	} catch {
+		return null;
 	}
 }
 
@@ -1113,11 +1144,13 @@ export function startWorkflow(
 	codegraphState: CodegraphState = "silent",
 	isolation?: { worktree?: WorktreeInfo },
 	judgeFamilies: string[] = ["claude"],
+	todoist?: { taskId: string; project: string; sectionMode: "sections" | "comment-only" },
 ): string {
 	syncBundledAgents(cwd);
 	preflightAgents(cwd, cfg);
 	ensureWorkTree(p);
 	const state = createState(feature, slug, baselineCommit, isolation);
+	if (todoist) state.todoist = { ...todoist, attachedFrame: false, attachedArch: false };
 	state.codegraphReady = codegraphState === "ready";
 	// Surface the confirmed check-pack risk profile to the plan judge (phase 3):
 	// a confirmed manifest's live axes become the coverage lens; an unconfirmed or

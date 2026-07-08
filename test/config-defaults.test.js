@@ -81,3 +81,7 @@ test("loop re-verifies all dimensions by default and bounds plan replans", () =>
   assert.equal(DEFAULT_CONFIG.reverifyAllInLoop, true);
   assert.equal(typeof DEFAULT_CONFIG.maxPlanRetries, "number");
 });
+
+test("Todoist integration is off by default (criterion 19)", () => {
+  assert.deepEqual(DEFAULT_CONFIG.todoist, { enabled: false });
+});

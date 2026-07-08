@@ -27,7 +27,7 @@ import { Type } from "typebox";
 import { DEFAULT_CONFIG, loadConfig } from "./lib/config.ts";
 import { getTelemetry } from "./lib/telemetry.ts";
 import type { SliceFlowConfig } from "./lib/config.ts";
-import { converge, nextStep, provisionCheckPack, setupWorktree, startAttack, startReflect, startResearch, startWorkflow, stopped, syncBundledAgents } from "./lib/engine.ts";
+import { converge, nextStep, provisionCheckPack, setupTodoistStart, setupWorktree, startAttack, startReflect, startResearch, startWorkflow, stopped, syncBundledAgents } from "./lib/engine.ts";
 import { hasProjectProfile, profileStaleNudge, runInit } from "./lib/init.ts";
 import { detectCodegraph } from "./lib/codegraph.ts";
 import { detectJudgeFamilies } from "./lib/judge-family.ts";
@@ -146,7 +146,8 @@ export default function (pi: ExtensionAPI) {
 				// build/scout agents can actually query.
 				const codegraphState = await detectCodegraph(auditCwd, (c, a, o) => pi.exec(c, a, o), ctx.cwd);
 				const checkLine = await provisionCheckPack(ctx, cfg, auditCwd, new Date().toISOString());
-				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies);
+				const todoist = await setupTodoistStart(ctx, cfg, (c, a, o) => pi.exec(c, a, o), params.description.trim());
+				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies, todoist ?? undefined);
 				await getTelemetry(cfg).flush();
 				// Profile affordance (UI banner, not the pure startWorkflow preamble):
 				// no profile → first-run capture tip; a captured-but-drifted profile →

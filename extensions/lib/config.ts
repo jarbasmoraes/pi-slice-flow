@@ -152,6 +152,10 @@ export interface SliceFlowConfig {
 	 * host family is present. `"same"` disables rerouting (judges keep their
 	 * configured models). */
 	judgeFamily: "cross" | "same";
+	/** Push MVP for the Todoist integration: when `enabled`, an interactive run
+	 * start creates a real Todoist task via the Composio CLI (see lib/todoist.ts).
+	 * Off by default — no surprise external calls. `debug` logs create failures. */
+	todoist: { enabled: boolean; debug?: boolean };
 	agents: SliceFlowAgents;
 	models: SliceFlowModels;
 }
@@ -213,6 +217,9 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	// available (probed at start), to dodge Claude's confirmed self-preference
 	// bias; degrades to the configured judge + caveat + position-swap otherwise.
 	judgeFamily: "cross",
+	// Off by default; a project opts in via slice-flow.json once Composio/Todoist
+	// are set up. See lib/todoist.ts for the fail-soft client.
+	todoist: { enabled: false },
 	// Defaults name slice-flow's own dedicated agents, bundled in
 	// slice-flow/agents/ and installed into .pi/agents/. There is no
 	// generic-builtin fallback: every phase resolves to a slice-flow-<role> agent.
@@ -298,6 +305,7 @@ function mergeConfig(base: SliceFlowConfig, overlay: Record<string, unknown>): S
 		autonomy: { ...base.autonomy, ...((overlay.autonomy as Partial<Record<GateName, AutonomyMode>>) ?? {}) },
 		telemetry: { ...base.telemetry, ...((overlay.telemetry as Partial<SliceFlowConfig["telemetry"]>) ?? {}) },
 		checks: { ...base.checks, ...((overlay.checks as Partial<SliceFlowConfig["checks"]>) ?? {}) },
+		todoist: { ...base.todoist, ...((overlay.todoist as Partial<SliceFlowConfig["todoist"]>) ?? {}) },
 		profile: { ...base.profile, ...((overlay.profile as Partial<SliceFlowConfig["profile"]>) ?? {}) },
 		agents: { ...base.agents, ...((overlay.agents as Partial<SliceFlowAgents>) ?? {}) },
 		models: { ...base.models, ...((overlay.models as Partial<SliceFlowModels>) ?? {}) },
