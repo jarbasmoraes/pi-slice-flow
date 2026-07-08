@@ -89,6 +89,9 @@ export interface State {
 	log: Array<LogEntry>;
 	telemetry?: { traceId: string }; // Langfuse trace id for this run, stable across resume
 	isolation?: { worktree?: WorktreeInfo; disposition?: string };
+	/** The real Todoist task created at run start (push MVP, slice 001). Undefined
+	 * when Todoist is disabled, no UI was present, or the create call failed. */
+	todoist?: { taskId: string; project: string; sectionMode: "sections" | "comment-only"; attachedFrame?: boolean; attachedArch?: boolean };
 }
 
 /** A structured log entry. `event` is the human-readable string (kept verbatim

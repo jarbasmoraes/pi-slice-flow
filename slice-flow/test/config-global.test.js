@@ -80,6 +80,14 @@ test("the checks map merges key-by-key like the other nested maps", () => {
   assert.deepEqual(cfg.checks.oracles, DEFAULT_CONFIG.checks.oracles, "default checks keys remain");
 });
 
+test("a project todoist.enabled=true overrides a global todoist.enabled=false (criterion 20)", () => {
+  const { cwd, home } = dirs();
+  writeGlobal(home, { todoist: { enabled: false } });
+  writeProject(cwd, { todoist: { enabled: true } });
+  const cfg = loadConfig(cwd, home);
+  assert.equal(cfg.todoist.enabled, true, "project todoist key overrides the global one");
+});
+
 test("a malformed global file throws a path-qualified error", () => {
   const { cwd, home } = dirs();
   mkdirSync(join(home, ".pi"), { recursive: true });
