@@ -263,6 +263,50 @@ test("architect exit with no state.todoist attaches nothing", async () => {
 	assert.equal(records.length, 0, "no attach when state.todoist is absent");
 });
 
+// --- Fail-soft: a failed or unparseable upload skips the file comment -------
+// Regression guards for the upload-then-comment fix: an attach is upload the
+// local file for a HOSTED file_url, THEN comment with that url. If the upload
+// does not yield a usable file_url, the comment must be skipped entirely so a
+// local filesystem path can never leak into a Todoist comment as an attachment.
+
+test("a nonzero-exit TODOIST_UPLOAD_FILE skips the file comment (no local path leaks)", async () => {
+	const records = [];
+	getTodoist(
+		cfg,
+		fakeExec(records, (cmd, args) => {
+			if (args[1] === "TODOIST_UPLOAD_FILE") return { code: 1, stdout: "", stderr: "upload rejected" };
+		}),
+	);
+	const { p, state } = frameReady("frame-attach-upload-fails");
+
+	const out = await nextStep(NO_UI, p, cfg, state);
+	assert.equal(state.phase, "architect");
+	assert.match(out, /Frame approved/);
+
+	await getTodoist(cfg).flush();
+	assert.equal(uploadOps(records).length, 2, "both docs are still attempted");
+	assert.equal(attachOps(records).length, 0, "no file comment is posted when the upload failed");
+});
+
+test("an unparseable TODOIST_UPLOAD_FILE response (no file_url) skips the file comment", async () => {
+	const records = [];
+	getTodoist(
+		cfg,
+		fakeExec(records, (cmd, args) => {
+			if (args[1] === "TODOIST_UPLOAD_FILE") return { code: 0, stdout: JSON.stringify({ data: { file_name: "doc" } }), stderr: "" };
+		}),
+	);
+	const { p, state } = frameReady("frame-attach-upload-unparseable");
+
+	const out = await nextStep(NO_UI, p, cfg, state);
+	assert.equal(state.phase, "architect");
+	assert.match(out, /Frame approved/);
+
+	await getTodoist(cfg).flush();
+	assert.equal(uploadOps(records).length, 2, "both docs are still attempted");
+	assert.equal(attachOps(records).length, 0, "no file comment is posted when the response carries no file_url");
+});
+
 // --- Fail-soft: a throwing transport does not block either transition -------
 
 test("a throwing transport does not block the frame->architect transition", async () => {
