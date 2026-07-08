@@ -5,13 +5,14 @@
  * flag, a missing `exec`, or a dead/failing CLI degrades to `null`/no-op and
  * never throws into the workflow.
  *
- * Slice 001: task creation. Slice 003 (this slice): a buffered, fail-soft
- * `move`/`comment` transport — synchronous enqueue methods append to an
- * in-memory buffer; `flush()` drains it over the Composio CLI in order,
- * catching every error. Nothing is enqueued yet (callers arrive in slices
- * 004-006); `attach`/`close`/`label` also arrive later.
+ * Slice 001: task creation. Slice 003: a buffered, fail-soft `move`/`comment`
+ * transport — synchronous enqueue methods append to an in-memory buffer;
+ * `flush()` drains it over the Composio CLI in order, catching every error.
+ * Slices 004-005 added the `move`/`comment`/`close`/`label` callers. Slice 006
+ * (this slice) adds `attach` for the one-time frame/architecture doc attachments.
  */
 
+import { basename } from "node:path";
 import type { SliceFlowConfig } from "./config.ts";
 import type { Exec } from "./worktree.ts";
 import type { Phase } from "./workspace.ts";
@@ -48,6 +49,11 @@ export interface Todoist {
 	move(taskId: string, project: string, section: string): void;
 	/** Synchronous, fail-soft enqueue: see `move`. */
 	comment(taskId: string, text: string): void;
+	/** Synchronous, fail-soft enqueue: attaches a file as a Todoist "file comment"
+	 * via TODOIST_CREATE_COMMENT_V1's `attachment` param (see the implementation
+	 * note on `attach` below for the known file_url-vs-local-path caveat). See
+	 * `move`. */
+	attach(taskId: string, filePath: string): void;
 	/** Synchronous, fail-soft enqueue: marks the task complete via
 	 * TODOIST_CLOSE_TASK_V1. See `move`. */
 	close(taskId: string): void;
@@ -67,6 +73,7 @@ export const NOOP: Todoist = {
 	},
 	move() {},
 	comment() {},
+	attach() {},
 	close() {},
 	label() {},
 	async flush() {},
@@ -138,6 +145,26 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 		// Confirmed: TODOIST_CREATE_COMMENT_V1 takes content + task_id.
 		comment(taskId, text) {
 			enqueue("TODOIST_CREATE_COMMENT_V1", { task_id: taskId, content: text });
+		},
+		// Confirmed via `composio search "attach file" --toolkits todoist`: a
+		// Todoist "file comment" is TODOIST_CREATE_COMMENT_V1 with an `attachment`
+		// object, per the tool's own schema (attachment.file_url/file_name). The
+		// real flow the CLI's own recommended plan describes is two calls
+		// (TODOIST_UPLOAD_FILE to get a hosted file_url, then this comment with
+		// that url) — this slice's contract fixes attach(taskId, filePath) as one
+		// synchronous, single-op enqueue, so `filePath` (a local run-artifact path,
+		// not an uploaded URL) is passed straight through as `attachment.file_url`.
+		// A live call will very likely reject this (or accept it but render an
+		// unreachable link) since Todoist cannot fetch a local path; this fails
+		// soft like every other guessed param shape in this client (swallowed in
+		// flush below). See the memo for the fix (upload-then-comment chaining)
+		// this slice deliberately does not build.
+		attach(taskId, filePath) {
+			enqueue("TODOIST_CREATE_COMMENT_V1", {
+				task_id: taskId,
+				content: `Attached: ${basename(filePath)}`,
+				attachment: { file_url: filePath, file_name: basename(filePath) },
+			});
 		},
 		// Confirmed: TODOIST_CLOSE_TASK_V1 takes only task_id.
 		close(taskId) {
