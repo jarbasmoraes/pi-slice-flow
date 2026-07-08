@@ -67,6 +67,100 @@ test("createTask returns null when the response cannot be parsed for an id", asy
 	assert.equal(await client.createTask({ project: "p", content: "c" }), null);
 });
 
+test("NOOP.findTask returns null and NOOP.taskContext returns empty fields", async () => {
+	assert.equal(await NOOP.findTask("anything"), null);
+	assert.deepEqual(await NOOP.taskContext("anything"), { content: "", description: "", comments: [] });
+});
+
+test("findTask resolves by id via TODOIST_GET_TASK2 and returns { taskId, project }", async () => {
+	const records = [];
+	const client = createTodoist({
+		enabled: true,
+		exec: fakeExec(records, (cmd, args) => {
+			if (args[1] === "TODOIST_GET_TASK2") return { code: 0, stdout: JSON.stringify({ data: { id: "7", project_id: "99" } }), stderr: "" };
+			return { code: 1, stdout: "", stderr: "" };
+		}),
+	});
+	const found = await client.findTask("7");
+	assert.deepEqual(found, { taskId: "7", project: "99" });
+	assert.equal(records.length, 1, "resolved on the first (id) lookup; no fallback search call");
+	assert.equal(records[0].args[1], "TODOIST_GET_TASK2");
+});
+
+test("findTask falls back to TODOIST_FILTER_TASKS search when the id lookup fails", async () => {
+	const records = [];
+	const client = createTodoist({
+		enabled: true,
+		exec: fakeExec(records, (cmd, args) => {
+			if (args[1] === "TODOIST_GET_TASK2") return { code: 1, stdout: "", stderr: "not found" };
+			if (args[1] === "TODOIST_FILTER_TASKS") {
+				const params = JSON.parse(args[3]);
+				assert.match(params.query, /search: My Task/);
+				return { code: 0, stdout: JSON.stringify({ data: { results: [{ id: "11", project_id: "22" }] } }), stderr: "" };
+			}
+			return { code: 1, stdout: "", stderr: "" };
+		}),
+	});
+	const found = await client.findTask("My Task");
+	assert.deepEqual(found, { taskId: "11", project: "22" });
+	assert.equal(records.length, 2, "id lookup then a search fallback");
+});
+
+test("findTask returns null (fail-soft) when both lookups fail", async () => {
+	const records = [];
+	const client = createTodoist({ enabled: true, exec: fakeExec(records, () => ({ code: 1, stdout: "", stderr: "boom" })) });
+	assert.equal(await client.findTask("nope"), null);
+});
+
+test("findTask returns null (fail-soft) when exec throws", async () => {
+	const client = createTodoist({
+		enabled: true,
+		exec: async () => {
+			throw new Error("spawn failed");
+		},
+	});
+	assert.equal(await client.findTask("nope"), null);
+});
+
+test("taskContext fetches content, description, and comments for a task id", async () => {
+	const records = [];
+	const client = createTodoist({
+		enabled: true,
+		exec: fakeExec(records, (cmd, args) => {
+			if (args[1] === "TODOIST_GET_TASK2") {
+				return { code: 0, stdout: JSON.stringify({ data: { content: "Fix bug", description: "Details here" } }), stderr: "" };
+			}
+			if (args[1] === "TODOIST_GET_ALL_COMMENTS") {
+				return { code: 0, stdout: JSON.stringify({ data: { comments: [{ content: "first comment" }, { content: "second comment" }] } }), stderr: "" };
+			}
+			return { code: 1, stdout: "", stderr: "" };
+		}),
+	});
+	const info = await client.taskContext("7");
+	assert.deepEqual(info, { content: "Fix bug", description: "Details here", comments: ["first comment", "second comment"] });
+	assert.equal(records.length, 2);
+	assert.equal(records[1].args[1], "TODOIST_GET_ALL_COMMENTS");
+	const commentParams = JSON.parse(records[1].args[3]);
+	assert.equal(commentParams.task_id, "7");
+});
+
+test("taskContext fails soft to empty fields when the task fetch fails", async () => {
+	const client = createTodoist({ enabled: true, exec: fakeExec([], () => ({ code: 1, stdout: "", stderr: "boom" })) });
+	const info = await client.taskContext("7");
+	assert.deepEqual(info, { content: "", description: "", comments: [] });
+});
+
+test("taskContext fails soft to empty fields when exec throws", async () => {
+	const client = createTodoist({
+		enabled: true,
+		exec: async () => {
+			throw new Error("spawn failed");
+		},
+	});
+	const info = await client.taskContext("7");
+	assert.deepEqual(info, { content: "", description: "", comments: [] });
+});
+
 test("getTodoist returns NOOP when cfg.todoist.enabled is false", () => {
 	resetTodoist();
 	const client = getTodoist({ todoist: { enabled: false } }, fakeExec([]));

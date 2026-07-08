@@ -126,24 +126,40 @@ export async function setupWorktree(
 }
 
 /**
- * Push MVP for the Todoist integration: when Todoist is enabled and a UI is
- * present, prompt for a destination project and create the run's tracking task
- * in its "Frame" section before the frame is approved. Returns null (and makes
- * no Composio call) with no UI, when Todoist is disabled, when the client is a
- * no-op, on a blank/cancelled prompt, or on any failure creating the task —
- * fail-soft end to end, mirroring setupWorktree. Nothing is persisted here;
- * the caller threads the result into startWorkflow.
+ * Todoist integration entry point for a run's start: when Todoist is enabled
+ * and a UI is present, ask whether to create a new tracking task (the slice
+ * 001 push path) or adopt an existing one (the pull path, this slice), then
+ * either creates a task in its "Frame" section or resolves + reads an existing
+ * task and seeds the run's feature description from it. Returns null (and
+ * makes no Composio call beyond any lookup already fired) with no UI, when
+ * Todoist is disabled, when the client is a no-op, on a dismissed/blank
+ * prompt, or on any failure — fail-soft end to end, mirroring setupWorktree.
+ * Nothing is persisted here; the caller threads the result into startWorkflow.
  */
 export async function setupTodoistStart(
 	ctx: GateContext,
 	cfg: SliceFlowConfig,
 	exec: Exec,
 	featureTitle: string,
-): Promise<{ taskId: string; project: string; sectionMode: "sections" | "comment-only" } | null> {
+): Promise<{ taskId: string; project: string; sectionMode: "sections" | "comment-only"; seed?: string } | null> {
 	if (!ctx.hasUI || cfg.todoist?.enabled !== true) return null;
 	try {
 		const client = getTodoist(cfg, exec);
 		if (!client.enabled) return null;
+		const mode = await ctx.ui.select("Start this run from Todoist?", ["Create a new Todoist task", "Adopt an existing Todoist task"]);
+		if (mode === undefined) return null;
+		if (mode === "Adopt an existing Todoist task") {
+			const query = await ctx.ui.input("Which Todoist task? (name or id)", "Task name or id to adopt, blank to skip Todoist");
+			if (!query || !query.trim()) return null;
+			const found = await client.findTask(query.trim());
+			if (!found) {
+				ctx.ui.notify(`Could not find a Todoist task matching "${query.trim()}". Continuing without Todoist.`, "warning");
+				return null;
+			}
+			const info = await client.taskContext(found.taskId);
+			const seed = [info.content, info.description, ...info.comments].map((s) => (s ?? "").trim()).filter(Boolean).join("\n\n");
+			return { taskId: found.taskId, project: found.project, sectionMode: "sections", seed };
+		}
 		const project = await ctx.ui.input("Todoist project for this run?", "Project name/id to track this run, blank to skip Todoist");
 		if (!project || !project.trim()) return null;
 		const trimmed = project.trim();

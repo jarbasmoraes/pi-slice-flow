@@ -9,7 +9,10 @@
  * transport — synchronous enqueue methods append to an in-memory buffer;
  * `flush()` drains it over the Composio CLI in order, catching every error.
  * Slices 004-005 added the `move`/`comment`/`close`/`label` callers. Slice 006
- * (this slice) adds `attach` for the one-time frame/architecture doc attachments.
+ * added `attach` for the one-time frame/architecture doc attachments. Slice 007
+ * (this slice) adds `findTask`/`taskContext` — awaited, immediate (unbuffered)
+ * lookups for the pull path (adopting an existing Todoist task), mirroring
+ * `createTask`'s shape rather than the buffered `move`/`comment`/etc.
  */
 
 import { basename } from "node:path";
@@ -43,6 +46,14 @@ export interface Op {
 export interface Todoist {
 	readonly enabled: boolean;
 	createTask(a: { project: string; section?: string; content: string }): Promise<string | null>;
+	/** Awaited, immediate lookup (not buffered): finds a task by name or id.
+	 * Tries an id lookup first, falls back to a text search; returns null when
+	 * nothing matches or on any failure. */
+	findTask(query: string): Promise<{ taskId: string; project: string } | null>;
+	/** Awaited, immediate lookup (not buffered): the task's content, description,
+	 * and existing comments, used to seed an adopted run's feature description.
+	 * Fails soft to empty strings/array on any failure. */
+	taskContext(taskId: string): Promise<{ content: string; description: string; comments: string[] }>;
 	/** Synchronous, fail-soft enqueue: appends to the in-memory op buffer. Never
 	 * throws (a full/misbehaving buffer is swallowed, mirroring every other
 	 * method on this client). Nothing is enqueued by this slice's callers yet. */
@@ -70,6 +81,12 @@ export const NOOP: Todoist = {
 	enabled: false,
 	async createTask() {
 		return null;
+	},
+	async findTask() {
+		return null;
+	},
+	async taskContext() {
+		return { content: "", description: "", comments: [] };
 	},
 	move() {},
 	comment() {},
@@ -102,6 +119,40 @@ function parseTaskId(stdout: string): string | null {
 	}
 }
 
+/** Best-effort extraction of a `{ taskId, project }` pair from either a
+ * TODOIST_GET_TASK2 (single-task) or TODOIST_FILTER_TASKS (list) response.
+ * Neither success envelope was confirmed against a live account (same
+ * unconfirmed-shape caveat as parseTaskId); returns null rather than
+ * guessing further when either field is missing. */
+function parseFoundTask(stdout: string): { taskId: string; project: string } | null {
+	try {
+		const parsed = JSON.parse(stdout) as {
+			data?: { id?: unknown; project_id?: unknown; task?: { id?: unknown; project_id?: unknown }; results?: Array<{ id?: unknown; project_id?: unknown }>; tasks?: Array<{ id?: unknown; project_id?: unknown }> };
+		};
+		const task = parsed?.data?.task ?? parsed?.data?.results?.[0] ?? parsed?.data?.tasks?.[0] ?? parsed?.data;
+		const id = task?.id;
+		const project = task?.project_id;
+		if (id === undefined || id === null || project === undefined || project === null) return null;
+		return { taskId: String(id), project: String(project) };
+	} catch {
+		return null;
+	}
+}
+
+/** Best-effort extraction of comment text from a TODOIST_GET_ALL_COMMENTS
+ * response (unconfirmed envelope, same caveat as parseFoundTask). Any
+ * non-string/blank content is dropped rather than guessed at. */
+function parseComments(stdout: string): string[] {
+	try {
+		const parsed = JSON.parse(stdout) as { data?: { comments?: Array<{ content?: unknown }>; results?: Array<{ content?: unknown }> } | Array<{ content?: unknown }> };
+		const raw = parsed?.data;
+		const list = Array.isArray(raw) ? raw : (raw?.comments ?? raw?.results ?? []);
+		return list.filter((c): c is { content: string } => typeof c?.content === "string" && c.content.length > 0).map((c) => c.content);
+	} catch {
+		return [];
+	}
+}
+
 /** Build a Todoist client that creates tasks via the Composio CLI. Returns the
  * shared NOOP when disabled or no `exec` was supplied (mirrors createTelemetry).
  * `createTask` never throws: a nonzero exit, a thrown `exec`, or an
@@ -130,6 +181,57 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 			} catch (e) {
 				if (opts.debug) console.error("[slice-flow todoist] create threw:", e);
 				return null;
+			}
+		},
+		// Confirmed via `composio tools info`: TODOIST_GET_TASK2 takes task_id and
+		// returns a single task (used here as an id lookup); TODOIST_FILTER_TASKS
+		// takes a `query` in Todoist filter syntax, with `search: <text>` as the
+		// free-text form, used as the name-search fallback when the id lookup
+		// fails. Neither success envelope was confirmed live (see parseFoundTask);
+		// a wrong guess degrades to a fail-soft null, matching every other method.
+		async findTask(query) {
+			try {
+				const byId = await composioExec(exec, "TODOIST_GET_TASK2", { task_id: query });
+				if (byId.code === 0) {
+					const found = parseFoundTask(byId.stdout);
+					if (found) return found;
+				}
+				const bySearch = await composioExec(exec, "TODOIST_FILTER_TASKS", { query: `search: ${query}` });
+				if (bySearch.code !== 0) {
+					if (opts.debug) console.error("[slice-flow todoist] findTask search failed:", bySearch.stderr || bySearch.stdout);
+					return null;
+				}
+				return parseFoundTask(bySearch.stdout);
+			} catch (e) {
+				if (opts.debug) console.error("[slice-flow todoist] findTask threw:", e);
+				return null;
+			}
+		},
+		// Confirmed: TODOIST_GET_TASK2 returns content/description on the task;
+		// TODOIST_GET_ALL_COMMENTS (mutually exclusive task_id/project_id, task_id
+		// used here) returns the task's comments. Any failure at either step fails
+		// soft to empty fields/array rather than a partial throw.
+		async taskContext(taskId) {
+			try {
+				const taskRes = await composioExec(exec, "TODOIST_GET_TASK2", { task_id: taskId });
+				if (taskRes.code !== 0) {
+					if (opts.debug) console.error("[slice-flow todoist] taskContext fetch failed:", taskRes.stderr || taskRes.stdout);
+					return { content: "", description: "", comments: [] };
+				}
+				let content = "";
+				let description = "";
+				try {
+					const parsed = JSON.parse(taskRes.stdout) as { data?: { content?: unknown; description?: unknown; task?: { content?: unknown; description?: unknown } } };
+					const task = parsed?.data?.task ?? parsed?.data;
+					if (typeof task?.content === "string") content = task.content;
+					if (typeof task?.description === "string") description = task.description;
+				} catch {}
+				const commentsRes = await composioExec(exec, "TODOIST_GET_ALL_COMMENTS", { task_id: taskId });
+				const comments = commentsRes.code === 0 ? parseComments(commentsRes.stdout) : [];
+				return { content, description, comments };
+			} catch (e) {
+				if (opts.debug) console.error("[slice-flow todoist] taskContext threw:", e);
+				return { content: "", description: "", comments: [] };
 			}
 		},
 		// Confirmed against the installed Composio CLI (search + tools info):
