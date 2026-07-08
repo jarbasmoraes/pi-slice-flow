@@ -26,6 +26,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { DEFAULT_CONFIG, loadConfig } from "./lib/config.ts";
 import { getTelemetry } from "./lib/telemetry.ts";
+import { getTodoist } from "./lib/todoist.ts";
 import type { SliceFlowConfig } from "./lib/config.ts";
 import { converge, nextStep, provisionCheckPack, setupTodoistStart, setupWorktree, startAttack, startReflect, startResearch, startWorkflow, stopped, syncBundledAgents } from "./lib/engine.ts";
 import { hasProjectProfile, profileStaleNudge, runInit } from "./lib/init.ts";
@@ -149,6 +150,7 @@ export default function (pi: ExtensionAPI) {
 				const todoist = await setupTodoistStart(ctx, cfg, (c, a, o) => pi.exec(c, a, o), params.description.trim());
 				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies, todoist ?? undefined);
 				await getTelemetry(cfg).flush();
+				await getTodoist(cfg, (c, a, o) => pi.exec(c, a, o)).flush();
 				// Profile affordance (UI banner, not the pure startWorkflow preamble):
 				// no profile → first-run capture tip; a captured-but-drifted profile →
 				// staleness nudge to refresh; a fresh profile → nothing.
@@ -207,7 +209,9 @@ export default function (pi: ExtensionAPI) {
 
 				case "abort": {
 					if (!state || !p) throw new Error("No slice-flow task to abort.");
-					return { content: [{ type: "text", text: stopped(p, state, params.note ?? "aborted via slice_flow tool", cfg) }], details: { slug } };
+					const text = stopped(p, state, params.note ?? "aborted via slice_flow tool", cfg);
+					await getTodoist(cfg, (c, a, o) => pi.exec(c, a, o)).flush();
+					return { content: [{ type: "text", text }], details: { slug } };
 				}
 
 				case "next": {
@@ -215,6 +219,7 @@ export default function (pi: ExtensionAPI) {
 					if (params.note) logEvent(state, `note: ${params.note}`);
 					const text = await nextStep(ctx, p, cfg, state, (c, a, o) => pi.exec(c, a, o));
 					await getTelemetry(cfg).flush();
+					await getTodoist(cfg, (c, a, o) => pi.exec(c, a, o)).flush();
 					return { content: [{ type: "text", text }], details: { phase: state.phase, slug } };
 				}
 
@@ -313,6 +318,7 @@ export default function (pi: ExtensionAPI) {
 						: {}),
 				});
 				await tel.flush();
+				await getTodoist(cfg, (c, a, o) => pi.exec(c, a, o)).flush();
 			}
 		} catch (e) {
 			appendTelemetryDebug(ctx.cwd, workDir, { event: "hook-error", hook: "tool_result", error: String(e) });
