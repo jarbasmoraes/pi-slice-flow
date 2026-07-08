@@ -130,8 +130,11 @@ export async function setupWorktree(
  * and a UI is present, ask whether to create a new tracking task (the slice
  * 001 push path) or adopt an existing one (the pull path, slice 007). The
  * push path always creates a task in its "Frame" section with
- * `sectionMode: "sections"`. The adopt path resolves + reads an existing task,
- * seeds the run's feature description from it, then (slice 008, this slice)
+ * `sectionMode: "sections"`. The adopt path resolves + reads an existing task
+ * and may seed the run's feature description from it — but because that text is
+ * often third-party authored, it only becomes the seed after the operator
+ * explicitly approves it (a trust boundary against indirect prompt injection);
+ * on decline the task is still adopted but the seed is dropped. It then (slice 008)
  * reconciles the adopted task's project against the 7-section board
  * convention: some sections present ⇒ create only the missing ones and use
  * `sectionMode: "sections"`; none present ⇒ create nothing and fall back to
@@ -163,6 +166,22 @@ export async function setupTodoistStart(
 			}
 			const info = await client.taskContext(found.taskId);
 			const seed = [info.content, info.description, ...info.comments].map((s) => (s ?? "").trim()).filter(Boolean).join("\n\n");
+			// Security trust boundary: an adopted task's content/description/comments
+			// are frequently third-party/multi-writer authored (shared Todoist
+			// projects, forwarded tasks). Left unchecked this text would flow verbatim
+			// into `state.feature` and thus into the intake subagent's directive — an
+			// indirect prompt-injection surface. Only let the pulled text seed the run
+			// after the operator reviews and explicitly approves it; otherwise the task
+			// is still adopted for board tracking but the run keeps its own first-party
+			// description (the caller falls back to params.description).
+			let approvedSeed: string | undefined;
+			if (seed) {
+				const useSeed = await ctx.ui.confirm(
+					"Use the adopted Todoist task's text as this run's feature description?",
+					`This text was pulled from Todoist and may have been written by others; it will be sent to the intake agent verbatim. Approve only if you trust it:\n\n${seed}`,
+				);
+				if (useSeed) approvedSeed = seed;
+			}
 			const existing = await client.listSections(found.project); // fail-soft ⇒ []
 			const present = BOARD_SECTIONS.filter((s) => existing.includes(s));
 			let sectionMode: "sections" | "comment-only";
@@ -175,7 +194,9 @@ export async function setupTodoistStart(
 					if (!existing.includes(s)) await client.createSection(found.project, s);
 				}
 			}
-			return { taskId: found.taskId, project: found.project, sectionMode, seed };
+			const adopted: { taskId: string; project: string; sectionMode: "sections" | "comment-only"; seed?: string } = { taskId: found.taskId, project: found.project, sectionMode };
+			if (approvedSeed) adopted.seed = approvedSeed;
+			return adopted;
 		}
 		const project = await ctx.ui.input("Todoist project for this run?", "Project name/id to track this run, blank to skip Todoist");
 		if (!project || !project.trim()) return null;
