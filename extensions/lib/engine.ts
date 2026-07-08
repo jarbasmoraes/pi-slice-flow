@@ -198,12 +198,18 @@ export async function setupTodoistStart(
 			if (approvedSeed) adopted.seed = approvedSeed;
 			return adopted;
 		}
-		const project = await ctx.ui.input("Todoist project for this run?", "Project name/id to track this run, blank to skip Todoist");
-		if (!project || !project.trim()) return null;
-		const trimmed = project.trim();
-		const taskId = await client.createTask({ project: trimmed, section: "Frame", content: featureTitle });
+		// Pick from EXISTING projects: Todoist project names are not unique and
+		// cannot be used as ids, so we resolve to a real project id up front and
+		// create the task in the resolved "Frame" section (name -> id in createTask).
+		const projects = await client.listProjects();
+		if (projects.length === 0) return null;
+		const picked = await ctx.ui.select("Todoist project for this run?", projects.map((pr) => pr.name));
+		if (picked === undefined) return null;
+		const chosen = projects.find((pr) => pr.name === picked);
+		if (!chosen) return null;
+		const taskId = await client.createTask({ project: chosen.id, section: "Frame", content: featureTitle });
 		if (!taskId) return null;
-		return { taskId, project: trimmed, sectionMode: "sections" };
+		return { taskId, project: chosen.id, sectionMode: "sections" };
 	} catch {
 		return null;
 	}

@@ -12,15 +12,33 @@ import { resetTodoist, getTodoist } from "../extensions/lib/todoist.ts";
 const NO_UI = { hasUI: false, ui: {} };
 const cfg = { ...DEFAULT_CONFIG, autoApprove: true, todoist: { enabled: true } };
 
-/** Records every exec invocation; returns canned success output. */
+/** Records every exec invocation. An attach is now a two-step flow — upload the
+ * local file (TODOIST_UPLOAD_FILE via the CLI's --file flag) to obtain a hosted
+ * file_url, then create the file comment with that url — so this fixture answers
+ * TODOIST_UPLOAD_FILE with a hosted url derived from the injected --file path. */
 function fakeExec(records, handler) {
 	return async (cmd, args, opts) => {
 		records.push({ cmd, args, opts });
-		return handler ? handler(cmd, args, opts) : { code: 0, stdout: "{}", stderr: "" };
+		if (handler) {
+			const r = handler(cmd, args, opts);
+			if (r) return r;
+		}
+		if (args[1] === "TODOIST_UPLOAD_FILE") {
+			const fi = args.indexOf("--file");
+			const fp = fi >= 0 ? args[fi + 1] : "";
+			return { code: 0, stdout: JSON.stringify({ data: { file_url: `url:${fp}`, file_name: "doc", resource_type: "file" } }), stderr: "" };
+		}
+		return { code: 0, stdout: "{}", stderr: "" };
 	};
 }
 
-/** Isolates just the attach ops (TODOIST_CREATE_COMMENT_V1 calls carrying an
+/** The local path injected into a given upload call via the CLI --file flag. */
+function uploadedPath(record) {
+	const fi = record.args.indexOf("--file");
+	return fi >= 0 ? record.args[fi + 1] : undefined;
+}
+
+/** Isolates just the attach comment ops (TODOIST_CREATE_COMMENT_V1 carrying an
  * `attachment` param) from a record list. As of slice 008, a `comment-only`
  * `state.todoist` (this fixture's sectionMode, chosen back in slice 006 to
  * keep transitionPhase's own move/comment traffic out of these attach-focused
@@ -29,6 +47,11 @@ function fakeExec(records, handler) {
  * exactly what they were always meant to test. */
 function attachOps(records) {
 	return records.filter((r) => r.args[1] === "TODOIST_CREATE_COMMENT_V1" && JSON.parse(r.args[3]).attachment);
+}
+
+/** The upload ops (TODOIST_UPLOAD_FILE) from a record list. */
+function uploadOps(records) {
+	return records.filter((r) => r.args[1] === "TODOIST_UPLOAD_FILE");
 }
 
 function setup(slug) {
@@ -137,15 +160,17 @@ test("frame -> architect attaches ledger and frame exactly once, guarded by atta
 	assert.equal(state.todoist.attachedFrame, true);
 
 	await getTodoist(cfg).flush();
+	const uploads = uploadOps(records);
+	assert.equal(uploads.length, 2, "each doc is uploaded first");
+	assert.ok(uploads.some((r) => uploadedPath(r) === p.ledger), "the ledger is uploaded by local path via --file");
+	assert.ok(uploads.some((r) => uploadedPath(r) === p.frame), "the frame is uploaded by local path via --file");
 	const ops = attachOps(records);
-	assert.equal(ops.length, 2, "exactly one attach op per doc");
-	assert.equal(ops[0].args[1], "TODOIST_CREATE_COMMENT_V1");
+	assert.equal(ops.length, 2, "exactly one file comment per doc");
 	const params1 = JSON.parse(ops[0].args[3]);
 	assert.equal(params1.task_id, "t1");
-	assert.equal(params1.attachment.file_url, p.ledger);
-	assert.equal(ops[1].args[1], "TODOIST_CREATE_COMMENT_V1");
+	assert.equal(params1.attachment.file_url, `url:${p.ledger}`, "the comment references the HOSTED upload url, not the local path");
 	const params2 = JSON.parse(ops[1].args[3]);
-	assert.equal(params2.attachment.file_url, p.frame);
+	assert.equal(params2.attachment.file_url, `url:${p.frame}`);
 
 	// Idempotent re-entry: a second pass through the same transition (state
 	// reset back to frame/frame-compile, as a resumed/duplicate call would see)
@@ -188,11 +213,10 @@ test("architect -> prototype (greenfield exit) attaches 02-architecture.md even 
 
 	await getTodoist(cfg).flush();
 	const ops = attachOps(records);
-	assert.equal(ops.length, 1, "exactly one attach op, no move (section unchanged)");
-	assert.equal(ops[0].args[1], "TODOIST_CREATE_COMMENT_V1");
+	assert.equal(ops.length, 1, "exactly one file comment, no move (section unchanged)");
 	const params = JSON.parse(ops[0].args[3]);
 	assert.equal(params.task_id, "t1");
-	assert.equal(params.attachment.file_url, p.architecture);
+	assert.equal(params.attachment.file_url, `url:${p.architecture}`);
 });
 
 test("architect -> plan (non-greenfield exit) attaches 02-architecture.md exactly once", async () => {
@@ -206,9 +230,9 @@ test("architect -> plan (non-greenfield exit) attaches 02-architecture.md exactl
 
 	await getTodoist(cfg).flush();
 	const ops = attachOps(records);
-	assert.equal(ops.length, 1, "exactly one attach op");
+	assert.equal(ops.length, 1, "exactly one file comment");
 	const params = JSON.parse(ops[0].args[3]);
-	assert.equal(params.attachment.file_url, p.architecture);
+	assert.equal(params.attachment.file_url, `url:${p.architecture}`);
 });
 
 test("architecture attach is guarded by attachedArch: a preset-true flag skips the attach", async () => {

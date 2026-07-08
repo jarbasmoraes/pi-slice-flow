@@ -10,17 +10,23 @@ const here = dirname(fileURLToPath(import.meta.url));
 const sliceFlowText = readFileSync(join(here, "..", "extensions", "slice-flow.ts"), "utf8");
 const engineText = readFileSync(join(here, "..", "extensions", "lib", "engine.ts"), "utf8");
 
-/** Records every exec invocation; returns canned success output. */
+/** Records every exec invocation; answers TODOIST_LIST_SECTIONS (section-id
+ * resolution for a move) and defaults everything else to canned success. */
 function fakeExec(records, handler) {
 	return async (cmd, args, opts) => {
 		records.push({ cmd, args, opts });
-		return handler ? handler(cmd, args, opts) : { code: 0, stdout: "{}", stderr: "" };
+		if (handler) {
+			const r = handler(cmd, args, opts);
+			if (r) return r;
+		}
+		if (args[1] === "TODOIST_LIST_SECTIONS") return { code: 0, stdout: JSON.stringify({ data: { results: [{ id: "sec-Doing", name: "Doing" }] } }), stderr: "" };
+		return { code: 0, stdout: "{}", stderr: "" };
 	};
 }
 
 // --- Buffer + flush ordering (acceptance criterion 10) ------------------------
 
-test("move then comment then flush runs exactly two composio calls in insertion order; a second flush runs nothing", async () => {
+test("move then comment then flush ships the move (section-resolved) before the comment; a second flush runs nothing", async () => {
 	const records = [];
 	const client = createTodoist({ enabled: true, exec: fakeExec(records) });
 	client.move("t1", "Inbox", "Doing");
@@ -28,28 +34,34 @@ test("move then comment then flush runs exactly two composio calls in insertion 
 	assert.equal(records.length, 0, "nothing shipped before flush");
 
 	await client.flush();
-	assert.equal(records.length, 2, "exactly two composio calls");
-	assert.equal(records[0].args[1], "TODOIST_MOVE_TASK", "move ships first (insertion order)");
-	assert.equal(records[1].args[1], "TODOIST_CREATE_COMMENT_V1", "comment ships second (insertion order)");
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	const comment = records.find((r) => r.args[1] === "TODOIST_CREATE_COMMENT_V1");
+	assert.ok(move && comment, "both the move and the comment ship");
+	assert.ok(records.indexOf(move) < records.indexOf(comment), "move ships before comment (insertion order)");
 
+	const before = records.length;
 	await client.flush();
-	assert.equal(records.length, 2, "a second flush ships nothing (buffer cleared)");
+	assert.equal(records.length, before, "a second flush ships nothing (buffer cleared)");
 });
 
-test("move and comment enqueue the expected composio params", async () => {
+test("move (section-resolved) and comment enqueue the expected composio params", async () => {
 	const records = [];
 	const client = createTodoist({ enabled: true, exec: fakeExec(records) });
 	client.move("t1", "Inbox", "Doing");
 	client.comment("t1", "hello");
 	await client.flush();
 
-	assert.equal(records[0].cmd, "composio");
-	assert.equal(records[0].args[0], "execute");
-	assert.equal(records[0].args[2], "-d");
-	const moveParams = JSON.parse(records[0].args[3]);
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	assert.equal(move.cmd, "composio");
+	assert.equal(move.args[0], "execute");
+	assert.equal(move.args[2], "-d");
+	const moveParams = JSON.parse(move.args[3]);
 	assert.equal(moveParams.task_id, "t1");
+	assert.equal(moveParams.section_id, "sec-Doing", "the section name resolved to its id");
+	assert.ok(!("project_id" in moveParams), "only section_id is sent (mutual exclusivity)");
 
-	const commentParams = JSON.parse(records[1].args[3]);
+	const comment = records.find((r) => r.args[1] === "TODOIST_CREATE_COMMENT_V1");
+	const commentParams = JSON.parse(comment.args[3]);
 	assert.equal(commentParams.task_id, "t1");
 	assert.equal(commentParams.content, "hello");
 });

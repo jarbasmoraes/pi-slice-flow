@@ -25,22 +25,63 @@ test("createTodoist returns NOOP when enabled but no exec is supplied", async ()
 	assert.equal(client, NOOP);
 });
 
-test("createTask issues exactly one composio execute call with -d JSON and returns the parsed id", async () => {
+test("createTask resolves the section name to a section id and creates the task with -d JSON", async () => {
 	const records = [];
-	const client = createTodoist({ enabled: true, exec: fakeExec(records) });
+	const client = createTodoist({
+		enabled: true,
+		exec: fakeExec(records, (cmd, args) => {
+			if (args[1] === "TODOIST_LIST_SECTIONS") return { code: 0, stdout: JSON.stringify({ data: { results: [{ id: "5001", name: "Frame" }] } }), stderr: "" };
+			return { code: 0, stdout: JSON.stringify({ data: { id: "999" } }), stderr: "" };
+		}),
+	});
 	assert.equal(client.enabled, true);
-	const id = await client.createTask({ project: "Inbox", section: "Frame", content: "Track feature X" });
+	const id = await client.createTask({ project: "2203306141", section: "Frame", content: "Track feature X" });
 	assert.equal(id, "999");
-	assert.equal(records.length, 1, "exactly one composio call");
-	assert.equal(records[0].cmd, "composio");
-	assert.equal(records[0].args[0], "execute");
-	assert.equal(records[0].args[1], "TODOIST_CREATE_TASK");
-	assert.equal(records[0].args[2], "-d");
-	const params = JSON.parse(records[0].args[3]);
+	const create = records.find((r) => r.args[1] === "TODOIST_CREATE_TASK");
+	assert.ok(create, "issued a create call");
+	assert.equal(create.cmd, "composio");
+	assert.equal(create.args[0], "execute");
+	assert.equal(create.args[2], "-d");
+	const params = JSON.parse(create.args[3]);
 	assert.equal(params.content, "Track feature X");
-	assert.equal(params.project_id, "Inbox");
-	assert.equal(params.section_id, "Frame");
-	assert.equal(records[0].opts.timeout, 5000);
+	assert.equal(params.project_id, "2203306141", "the project id is sent, not a display name");
+	assert.equal(params.section_id, "5001", "the section name is resolved to its numeric id");
+	assert.equal(create.opts.timeout, 5000);
+});
+
+test("createTask omits section_id when the section name cannot be resolved (fail-soft)", async () => {
+	const records = [];
+	const client = createTodoist({
+		enabled: true,
+		exec: fakeExec(records, (cmd, args) => {
+			if (args[1] === "TODOIST_LIST_SECTIONS") return { code: 0, stdout: JSON.stringify({ data: { results: [] } }), stderr: "" };
+			return { code: 0, stdout: JSON.stringify({ data: { id: "999" } }), stderr: "" };
+		}),
+	});
+	const id = await client.createTask({ project: "1", section: "Frame", content: "c" });
+	assert.equal(id, "999");
+	const create = records.find((r) => r.args[1] === "TODOIST_CREATE_TASK");
+	assert.ok(!("section_id" in JSON.parse(create.args[3])), "unresolved section is dropped, not sent as a name");
+});
+
+test("listProjects returns id/name pairs parsed from TODOIST_GET_ALL_PROJECTS", async () => {
+	const records = [];
+	const client = createTodoist({
+		enabled: true,
+		exec: fakeExec(records, () => ({ code: 0, stdout: JSON.stringify({ data: { results: [{ id: "1", name: "Inbox" }, { id: "2", name: "Work" }] } }), stderr: "" })),
+	});
+	const projects = await client.listProjects();
+	assert.deepEqual(projects, [{ id: "1", name: "Inbox" }, { id: "2", name: "Work" }]);
+	assert.equal(records[0].args[1], "TODOIST_GET_ALL_PROJECTS");
+});
+
+test("listProjects fails soft to [] on a nonzero exit", async () => {
+	const client = createTodoist({ enabled: true, exec: fakeExec([], () => ({ code: 1, stdout: "", stderr: "boom" })) });
+	assert.deepEqual(await client.listProjects(), []);
+});
+
+test("NOOP.listProjects returns []", async () => {
+	assert.deepEqual(await NOOP.listProjects(), []);
 });
 
 test("createTask returns null (fail-soft) on a nonzero composio exit", async () => {

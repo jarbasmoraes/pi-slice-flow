@@ -119,10 +119,11 @@ test("comment-only run: a section-changing transition enqueues a comment and no 
 	assert.match(params.content, /implement: plan approved/);
 });
 
-test("sections-mode run still behaves exactly as slice 004: move + comment on a section change (regression guard)", async () => {
+test("sections-mode run still behaves exactly as slice 004: move (resolved section id) + comment on a section change (regression guard)", async () => {
 	const records = [];
 	getTodoist(cfg, async (cmd, args, opts) => {
 		records.push({ cmd, args, opts });
+		if (args[1] === "TODOIST_LIST_SECTIONS") return { code: 0, stdout: JSON.stringify({ data: { results: [{ id: "sec-Build", name: "Build" }] } }), stderr: "" };
 		return { code: 0, stdout: "{}", stderr: "" };
 	});
 	const state = createState("feat", "feat", "base123");
@@ -132,7 +133,8 @@ test("sections-mode run still behaves exactly as slice 004: move + comment on a 
 	transitionPhase(state, "implement", "plan approved", cfg);
 
 	await getTodoist(cfg).flush();
-	assert.equal(records.length, 2, "one move + one comment");
-	assert.equal(records[0].args[1], "TODOIST_MOVE_TASK");
-	assert.equal(records[1].args[1], "TODOIST_CREATE_COMMENT_V1");
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	const comment = records.find((r) => r.args[1] === "TODOIST_CREATE_COMMENT_V1");
+	assert.ok(move && comment, "one move + one comment");
+	assert.equal(JSON.parse(move.args[3]).section_id, "sec-Build", "the Build section name resolved to its id");
 });
