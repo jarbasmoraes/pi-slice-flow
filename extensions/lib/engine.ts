@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GateName, SliceFlowConfig } from "./config.ts";
 import { getTelemetry } from "./telemetry.ts";
-import { getTodoist } from "./todoist.ts";
+import { PHASE_SECTION, getTodoist } from "./todoist.ts";
 import {
 	REFLECT_RUBRICS,
 	archAttackDirective,
@@ -268,7 +268,16 @@ export function transitionPhase(state: State, next: Phase, reason: string, cfg: 
 	const from = state.phase;
 	state.phase = next;
 	logEvent(state, `phase ${from} -> ${next}: ${reason}`, "phase");
-	// Todoist enqueue body is added in later slices (004–006); nothing here yet.
+	const td = state.todoist;
+	if (!td?.taskId) return;
+	const client = getTodoist(cfg);
+	if (!client.enabled) return;
+	const fromSec = PHASE_SECTION[from];
+	const toSec = PHASE_SECTION[next];
+	if (td.sectionMode === "sections" && toSec && toSec !== fromSec) {
+		client.move(td.taskId, td.project, toSec);
+		client.comment(td.taskId, `Moved to ${toSec}: ${reason}`);
+	}
 }
 
 export function stopped(p: Paths, state: State, reason: string, cfg: SliceFlowConfig): string {
