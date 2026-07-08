@@ -149,15 +149,22 @@ async function composioExec(exec: Exec, tool: string, params: Record<string, unk
 
 /** Best-effort extraction of `{ id, name }` pairs from a list response
  * (TODOIST_GET_ALL_PROJECTS, TODOIST_LIST_SECTIONS). Composio nests the list
- * under response.data.results (see the tools' own known-pitfalls); entries
- * missing an id or name are dropped rather than guessed at. */
+ * under different keys per tool: TODOIST_GET_ALL_PROJECTS returns it under
+ * response.data.projects with each entry keyed by `project_id` (per the tool's
+ * own description and its search known-pitfalls), while TODOIST_LIST_SECTIONS
+ * returns it under response.data.results. Both the envelope
+ * (results/projects/sections) and the id field (id/project_id/section_id) are
+ * probed so one parser serves both tools; entries missing an id or name are
+ * dropped rather than guessed at. */
 function parseNamedList(stdout: string): Array<{ id: string; name: string }> {
+	type Entry = { id?: unknown; project_id?: unknown; section_id?: unknown; name?: unknown };
 	try {
-		const parsed = JSON.parse(stdout) as { data?: { results?: Array<{ id?: unknown; name?: unknown }> } | Array<{ id?: unknown; name?: unknown }> };
+		const parsed = JSON.parse(stdout) as { data?: { results?: Entry[]; projects?: Entry[]; sections?: Entry[] } | Entry[] };
 		const raw = parsed?.data;
-		const list = Array.isArray(raw) ? raw : (raw?.results ?? []);
+		const list: Entry[] = Array.isArray(raw) ? raw : (raw?.results ?? raw?.projects ?? raw?.sections ?? []);
 		return list
-			.filter((x): x is { id: unknown; name: string } => typeof x?.name === "string" && x.name.length > 0 && x?.id !== undefined && x?.id !== null)
+			.map((x) => ({ id: x?.id ?? x?.project_id ?? x?.section_id, name: x?.name }))
+			.filter((x): x is { id: unknown; name: string } => typeof x.name === "string" && x.name.length > 0 && x.id !== undefined && x.id !== null)
 			.map((x) => ({ id: String(x.id), name: x.name }));
 	} catch {
 		return [];
@@ -277,15 +284,17 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 	}
 
 	// A move enqueues the section NAME (transitionPhase is synchronous and cannot
-	// resolve); flush resolves it to an id here and sends section_id ONLY, since
-	// project_id/section_id/parent_id are mutually exclusive on TODOIST_MOVE_TASK.
+	// resolve); flush resolves it to an id here and sends section_id ONLY.
+	// TODOIST_MOVE_TASK_REST_API is Composio's recommended, non-deprecated move
+	// tool (TODOIST_MOVE_TASK is documented to return HTTP 410 Gone on
+	// deprecation); it requires at least one of project_id/section_id/parent_id.
 	async function runMove(p: Record<string, unknown>): Promise<void> {
 		const sectionId = await resolveSectionId(String(p.project), String(p.section));
 		if (!sectionId) {
 			if (opts.debug) console.error(`[slice-flow todoist] move skipped: no section id for "${String(p.section)}"`);
 			return;
 		}
-		const res = await composioExec(exec, "TODOIST_MOVE_TASK", { task_id: p.task_id, section_id: sectionId });
+		const res = await composioExec(exec, "TODOIST_MOVE_TASK_REST_API", { task_id: p.task_id, section_id: sectionId });
 		if (res.code !== 0 && opts.debug) console.error("[slice-flow todoist] move failed:", res.stderr || res.stdout);
 	}
 
@@ -443,6 +452,17 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 		// missing before setupTodoistStart returns. Never throws; a failed create
 		// leaves that section missing but does not block the run.
 		async createSection(project, name) {
+			// TODOIST_CREATE_SECTION_V1 only accepts new-format alphanumeric v1 project
+			// IDs; its schema states legacy numeric project IDs are not supported by
+			// the v1 API. Skip fail-soft rather than send a request the tool documents
+			// it will reject. The adopt path sources this id from the v1-API
+			// TODOIST_GET_TASK2/TODOIST_FILTER_TASKS (which return v1 ids), so this
+			// guard only trips on a legacy-numeric id that could not be used anyway —
+			// the project then keeps whatever sections it has (comment-only downstream).
+			if (/^\d+$/.test(project)) {
+				if (opts.debug) console.error(`[slice-flow todoist] createSection skipped: legacy-format project id "${project}" not supported by TODOIST_CREATE_SECTION_V1`);
+				return;
+			}
 			try {
 				const res = await composioExec(exec, "TODOIST_CREATE_SECTION_V1", { project_id: project, name });
 				if (res.code !== 0 && opts.debug) console.error("[slice-flow todoist] createSection failed:", res.stderr || res.stdout);
@@ -452,10 +472,9 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 		},
 		// A section-changing move. `project` is a project id and `section` a section
 		// NAME; flush resolves the name to a section id and moves with section_id
-		// only (TODOIST_MOVE_TASK's project_id/section_id/parent_id are mutually
-		// exclusive).
+		// only via TODOIST_MOVE_TASK_REST_API (the non-deprecated move tool).
 		move(taskId, project, section) {
-			enqueue("TODOIST_MOVE_TASK", { task_id: taskId, project, section }, "move");
+			enqueue("TODOIST_MOVE_TASK_REST_API", { task_id: taskId, project, section }, "move");
 		},
 		// Confirmed: TODOIST_CREATE_COMMENT_V1 takes content + task_id.
 		comment(taskId, text) {

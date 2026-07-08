@@ -23,7 +23,10 @@ function fakeCtx({ input = async () => "7" } = {}) {
 /** Answers the adopt-branch lookups (find/context) plus TODOIST_LIST_SECTIONS
  * and TODOIST_CREATE_SECTION_V1, with `sections` controlling what the fake
  * project already has. */
-function fakeExec(records, { taskId = "7", project = "99", sections = ALL_SECTIONS } = {}) {
+// `project` defaults to a new-format v1 project id (what the v1-API GET_TASK2
+// actually returns) so section reconciliation via TODOIST_CREATE_SECTION_V1 —
+// which rejects legacy numeric ids — actually runs.
+function fakeExec(records, { taskId = "7", project = "6XvwwRvRfmCjM5PW", sections = ALL_SECTIONS } = {}) {
 	return async (cmd, args, opts) => {
 		records.push({ cmd, args, opts });
 		const tool = args[1];
@@ -133,7 +136,7 @@ test("sections-mode run still behaves exactly as slice 004: move (resolved secti
 	transitionPhase(state, "implement", "plan approved", cfg);
 
 	await getTodoist(cfg).flush();
-	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK_REST_API");
 	const comment = records.find((r) => r.args[1] === "TODOIST_CREATE_COMMENT_V1");
 	assert.ok(move && comment, "one move + one comment");
 	assert.equal(JSON.parse(move.args[3]).section_id, "sec-Build", "the Build section name resolved to its id");

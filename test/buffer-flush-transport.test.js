@@ -34,7 +34,7 @@ test("move then comment then flush ships the move (section-resolved) before the 
 	assert.equal(records.length, 0, "nothing shipped before flush");
 
 	await client.flush();
-	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK_REST_API");
 	const comment = records.find((r) => r.args[1] === "TODOIST_CREATE_COMMENT_V1");
 	assert.ok(move && comment, "both the move and the comment ship");
 	assert.ok(records.indexOf(move) < records.indexOf(comment), "move ships before comment (insertion order)");
@@ -51,7 +51,7 @@ test("move (section-resolved) and comment enqueue the expected composio params",
 	client.comment("t1", "hello");
 	await client.flush();
 
-	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK_REST_API");
 	assert.equal(move.cmd, "composio");
 	assert.equal(move.args[0], "execute");
 	assert.equal(move.args[2], "-d");
