@@ -148,7 +148,12 @@ export default function (pi: ExtensionAPI) {
 				const codegraphState = await detectCodegraph(auditCwd, (c, a, o) => pi.exec(c, a, o), ctx.cwd);
 				const checkLine = await provisionCheckPack(ctx, cfg, auditCwd, new Date().toISOString());
 				const todoist = await setupTodoistStart(ctx, cfg, (c, a, o) => pi.exec(c, a, o), params.description.trim());
-				const text = startWorkflow(p, cfg, params.description.trim(), slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies, todoist ?? undefined);
+				// An adopted task's content+description+comments seeds the run's feature
+				// description; the push path (or no Todoist) leaves it as the human's
+				// literal description. Slug/paths above are allocated from the raw
+				// description, independent of this seed, so folder naming stays stable.
+				const feature = todoist?.seed?.trim() || params.description.trim();
+				const text = startWorkflow(p, cfg, feature, slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies, todoist ?? undefined);
 				await getTelemetry(cfg).flush();
 				await getTodoist(cfg, (c, a, o) => pi.exec(c, a, o)).flush();
 				// Profile affordance (UI banner, not the pure startWorkflow preamble):

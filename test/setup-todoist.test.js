@@ -12,13 +12,13 @@ function fakeExec(records, handler) {
 	};
 }
 
-function fakeCtx({ hasUI = true, input = async () => "MyProj" } = {}) {
+function fakeCtx({ hasUI = true, input = async () => "MyProj", select = async () => "Create a new Todoist task" } = {}) {
 	return {
 		hasUI,
 		ui: {
 			input: async (title, placeholder) => input(title, placeholder),
 			notify() {},
-			select: async () => undefined,
+			select: async (title, options) => select(title, options),
 			confirm: async () => false,
 		},
 	};
@@ -99,6 +99,102 @@ test("a composio create failure (nonzero exit) makes setupTodoistStart return nu
 test("a thrown exec makes setupTodoistStart return null (fail-soft)", async () => {
 	resetTodoist();
 	const ctx = fakeCtx();
+	const exec = async () => {
+		throw new Error("spawn ENOENT");
+	};
+	const result = await setupTodoistStart(ctx, enabledCfg, exec, "Feature X");
+	assert.equal(result, null);
+	resetTodoist();
+});
+
+test("a dismissed mode selection returns null and makes no composio call", async () => {
+	resetTodoist();
+	const records = [];
+	const ctx = fakeCtx({ select: async () => undefined });
+	const result = await setupTodoistStart(ctx, enabledCfg, fakeExec(records), "Feature X");
+	assert.equal(result, null);
+	assert.equal(records.length, 0);
+	resetTodoist();
+});
+
+/** Fake exec that answers TODOIST_GET_TASK2 (id lookup), TODOIST_FILTER_TASKS
+ * (search), and TODOIST_GET_ALL_COMMENTS for the adopt-branch tests, and fails
+ * (records but never succeeds) any TODOIST_CREATE_TASK call so a stray create
+ * would be obvious. */
+function fakeAdoptExec(records, { taskId = "7", project = "99", content = "Fix the bug", description = "More detail", comments = ["first", "second"] } = {}) {
+	return async (cmd, args, opts) => {
+		records.push({ cmd, args, opts });
+		const tool = args[1];
+		if (tool === "TODOIST_GET_TASK2") {
+			const params = JSON.parse(args[3]);
+			if (params.task_id !== taskId) return { code: 1, stdout: "", stderr: "not found" };
+			return { code: 0, stdout: JSON.stringify({ data: { id: taskId, project_id: project, content, description } }), stderr: "" };
+		}
+		if (tool === "TODOIST_FILTER_TASKS") return { code: 0, stdout: JSON.stringify({ data: { results: [{ id: taskId, project_id: project }] } }), stderr: "" };
+		if (tool === "TODOIST_GET_ALL_COMMENTS") return { code: 0, stdout: JSON.stringify({ data: { comments: comments.map((c) => ({ content: c })) } }), stderr: "" };
+		return { code: 1, stdout: "", stderr: "unexpected tool in adopt test" };
+	};
+}
+
+test("adopting an existing task by id: no create call, taskId is the adopted task's id, project is its existing project, seed concatenates content+description+comments (criteria 14, 15, 18)", async () => {
+	resetTodoist();
+	const records = [];
+	const inputCalls = [];
+	const ctx = fakeCtx({
+		select: async () => "Adopt an existing Todoist task",
+		input: async (title, placeholder) => {
+			inputCalls.push({ title, placeholder });
+			return "7";
+		},
+	});
+	const result = await setupTodoistStart(ctx, enabledCfg, fakeAdoptExec(records), "Feature X");
+	assert.deepEqual(result, { taskId: "7", project: "99", sectionMode: "sections", seed: "Fix the bug\n\nMore detail\n\nfirst\n\nsecond" });
+	assert.equal(inputCalls.length, 1, "prompted exactly once (for the task to adopt), no separate project prompt");
+	assert.ok(
+		!records.some((r) => r.args[1] === "TODOIST_CREATE_TASK"),
+		"no create call is issued when adopting",
+	);
+	resetTodoist();
+});
+
+test("adopt seed drops blank content/description/comments", async () => {
+	resetTodoist();
+	const records = [];
+	const ctx = fakeCtx({
+		select: async () => "Adopt an existing Todoist task",
+		input: async () => "7",
+	});
+	const result = await setupTodoistStart(ctx, enabledCfg, fakeAdoptExec(records, { content: "Only content", description: "  ", comments: [] }), "Feature X");
+	assert.equal(result.seed, "Only content");
+	resetTodoist();
+});
+
+test("a blank adopt query returns null and makes no composio call", async () => {
+	resetTodoist();
+	const records = [];
+	const ctx = fakeCtx({ select: async () => "Adopt an existing Todoist task", input: async () => "  " });
+	const result = await setupTodoistStart(ctx, enabledCfg, fakeExec(records), "Feature X");
+	assert.equal(result, null);
+	assert.equal(records.length, 0);
+	resetTodoist();
+});
+
+test("an unresolvable adopt query fails soft to null (findTask finds nothing)", async () => {
+	resetTodoist();
+	const records = [];
+	const notifications = [];
+	const ctx = fakeCtx({ select: async () => "Adopt an existing Todoist task", input: async () => "Nonexistent Task" });
+	ctx.ui.notify = (msg, level) => notifications.push({ msg, level });
+	const exec = fakeExec(records, () => ({ code: 1, stdout: "", stderr: "not found" }));
+	const result = await setupTodoistStart(ctx, enabledCfg, exec, "Feature X");
+	assert.equal(result, null);
+	assert.ok(notifications.length >= 1, "notifies the human that the task could not be found");
+	resetTodoist();
+});
+
+test("a thrown exec during adopt fails soft to null", async () => {
+	resetTodoist();
+	const ctx = fakeCtx({ select: async () => "Adopt an existing Todoist task", input: async () => "7" });
 	const exec = async () => {
 		throw new Error("spawn ENOENT");
 	};
