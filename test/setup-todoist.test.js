@@ -12,14 +12,14 @@ function fakeExec(records, handler) {
 	};
 }
 
-function fakeCtx({ hasUI = true, input = async () => "MyProj", select = async () => "Create a new Todoist task" } = {}) {
+function fakeCtx({ hasUI = true, input = async () => "MyProj", select = async () => "Create a new Todoist task", confirm = async () => true } = {}) {
 	return {
 		hasUI,
 		ui: {
 			input: async (title, placeholder) => input(title, placeholder),
 			notify() {},
 			select: async (title, options) => select(title, options),
-			confirm: async () => false,
+			confirm: async (title, description) => confirm(title, description),
 		},
 	};
 }
@@ -143,24 +143,64 @@ function fakeAdoptExec(records, { taskId = "7", project = "99", content = "Fix t
 	};
 }
 
-test("adopting an existing task by id: no create call, taskId is the adopted task's id, project is its existing project, seed concatenates content+description+comments (criteria 14, 15, 18)", async () => {
+test("adopting an existing task by id: no create call, taskId is the adopted task's id, project is its existing project, seed concatenates content+description+comments after human approval (criteria 14, 15, 18)", async () => {
 	resetTodoist();
 	const records = [];
 	const inputCalls = [];
+	const confirmCalls = [];
 	const ctx = fakeCtx({
 		select: async () => "Adopt an existing Todoist task",
 		input: async (title, placeholder) => {
 			inputCalls.push({ title, placeholder });
 			return "7";
 		},
+		confirm: async (title, description) => {
+			confirmCalls.push({ title, description });
+			return true;
+		},
 	});
 	const result = await setupTodoistStart(ctx, enabledCfg, fakeAdoptExec(records), "Feature X");
 	assert.deepEqual(result, { taskId: "7", project: "99", sectionMode: "sections", seed: "Fix the bug\n\nMore detail\n\nfirst\n\nsecond" });
 	assert.equal(inputCalls.length, 1, "prompted exactly once (for the task to adopt), no separate project prompt");
+	assert.equal(confirmCalls.length, 1, "operator is asked to approve the pulled text before it seeds the run");
+	assert.ok(confirmCalls[0].description.includes("Fix the bug\n\nMore detail\n\nfirst\n\nsecond"), "the exact pulled seed is shown for review before approval");
 	assert.ok(
 		!records.some((r) => r.args[1] === "TODOIST_CREATE_TASK"),
 		"no create call is issued when adopting",
 	);
+	resetTodoist();
+});
+
+test("declining the seed confirmation still adopts the task for board tracking but drops the pulled text (trust boundary against prompt injection)", async () => {
+	resetTodoist();
+	const records = [];
+	const ctx = fakeCtx({
+		select: async () => "Adopt an existing Todoist task",
+		input: async () => "7",
+		confirm: async () => false,
+	});
+	const result = await setupTodoistStart(ctx, enabledCfg, fakeAdoptExec(records), "Feature X");
+	assert.deepEqual(result, { taskId: "7", project: "99", sectionMode: "sections" }, "task is adopted, but no seed key so feature falls back to the first-party description");
+	assert.equal(result.seed, undefined, "third-party text never reaches the run when the operator declines");
+	resetTodoist();
+});
+
+test("no confirmation is asked (and no seed returned) when the adopted task has no text", async () => {
+	resetTodoist();
+	const records = [];
+	const confirmCalls = [];
+	const ctx = fakeCtx({
+		select: async () => "Adopt an existing Todoist task",
+		input: async () => "7",
+		confirm: async () => {
+			confirmCalls.push(true);
+			return true;
+		},
+	});
+	const result = await setupTodoistStart(ctx, enabledCfg, fakeAdoptExec(records, { content: "  ", description: "  ", comments: [] }), "Feature X");
+	assert.equal(confirmCalls.length, 0, "empty seed ⇒ nothing to review, no confirm prompt");
+	assert.equal(result.seed, undefined);
+	assert.deepEqual(result, { taskId: "7", project: "99", sectionMode: "sections" });
 	resetTodoist();
 });
 
