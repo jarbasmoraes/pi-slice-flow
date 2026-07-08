@@ -20,6 +20,17 @@ function fakeExec(records, handler) {
 	};
 }
 
+/** Isolates just the attach ops (TODOIST_CREATE_COMMENT_V1 calls carrying an
+ * `attachment` param) from a record list. As of slice 008, a `comment-only`
+ * `state.todoist` (this fixture's sectionMode, chosen back in slice 006 to
+ * keep transitionPhase's own move/comment traffic out of these attach-focused
+ * assertions) now also enqueues its own plain phase-transition comment on
+ * every transition; filtering to attach ops keeps these assertions about
+ * exactly what they were always meant to test. */
+function attachOps(records) {
+	return records.filter((r) => r.args[1] === "TODOIST_CREATE_COMMENT_V1" && JSON.parse(r.args[3]).attachment);
+}
+
 function setup(slug) {
 	const cwd = mkdtempSync(join(tmpdir(), `slice-flow-${slug}-`));
 	const p = workPaths(cwd, ".pi/task", "feat");
@@ -126,13 +137,14 @@ test("frame -> architect attaches ledger and frame exactly once, guarded by atta
 	assert.equal(state.todoist.attachedFrame, true);
 
 	await getTodoist(cfg).flush();
-	assert.equal(records.length, 2, "exactly one attach op per doc");
-	assert.equal(records[0].args[1], "TODOIST_CREATE_COMMENT_V1");
-	const params1 = JSON.parse(records[0].args[3]);
+	const ops = attachOps(records);
+	assert.equal(ops.length, 2, "exactly one attach op per doc");
+	assert.equal(ops[0].args[1], "TODOIST_CREATE_COMMENT_V1");
+	const params1 = JSON.parse(ops[0].args[3]);
 	assert.equal(params1.task_id, "t1");
 	assert.equal(params1.attachment.file_url, p.ledger);
-	assert.equal(records[1].args[1], "TODOIST_CREATE_COMMENT_V1");
-	const params2 = JSON.parse(records[1].args[3]);
+	assert.equal(ops[1].args[1], "TODOIST_CREATE_COMMENT_V1");
+	const params2 = JSON.parse(ops[1].args[3]);
 	assert.equal(params2.attachment.file_url, p.frame);
 
 	// Idempotent re-entry: a second pass through the same transition (state
@@ -144,7 +156,7 @@ test("frame -> architect attaches ledger and frame exactly once, guarded by atta
 	assert.equal(state.phase, "architect");
 	assert.match(out2, /Frame approved/);
 	await getTodoist(cfg).flush();
-	assert.equal(records.length, 2, "no new attach ops on re-entry");
+	assert.equal(attachOps(records).length, 2, "no new attach ops on re-entry");
 });
 
 test("frame -> architect with no state.todoist attaches nothing", async () => {
@@ -175,9 +187,10 @@ test("architect -> prototype (greenfield exit) attaches 02-architecture.md even 
 	assert.match(out, /Greenfield UI/);
 
 	await getTodoist(cfg).flush();
-	assert.equal(records.length, 1, "exactly one attach op, no move (section unchanged)");
-	assert.equal(records[0].args[1], "TODOIST_CREATE_COMMENT_V1");
-	const params = JSON.parse(records[0].args[3]);
+	const ops = attachOps(records);
+	assert.equal(ops.length, 1, "exactly one attach op, no move (section unchanged)");
+	assert.equal(ops[0].args[1], "TODOIST_CREATE_COMMENT_V1");
+	const params = JSON.parse(ops[0].args[3]);
 	assert.equal(params.task_id, "t1");
 	assert.equal(params.attachment.file_url, p.architecture);
 });
@@ -192,8 +205,9 @@ test("architect -> plan (non-greenfield exit) attaches 02-architecture.md exactl
 	assert.equal(state.todoist.attachedArch, true);
 
 	await getTodoist(cfg).flush();
-	assert.equal(records.length, 1, "exactly one attach op");
-	const params = JSON.parse(records[0].args[3]);
+	const ops = attachOps(records);
+	assert.equal(ops.length, 1, "exactly one attach op");
+	const params = JSON.parse(ops[0].args[3]);
 	assert.equal(params.attachment.file_url, p.architecture);
 });
 
@@ -208,7 +222,7 @@ test("architecture attach is guarded by attachedArch: a preset-true flag skips t
 	assert.match(out, /Architecture approved/);
 
 	await getTodoist(cfg).flush();
-	assert.equal(records.length, 0, "no attach when attachedArch already true");
+	assert.equal(attachOps(records).length, 0, "no attach when attachedArch already true");
 });
 
 test("architect exit with no state.todoist attaches nothing", async () => {

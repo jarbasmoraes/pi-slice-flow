@@ -10,9 +10,12 @@
  * `flush()` drains it over the Composio CLI in order, catching every error.
  * Slices 004-005 added the `move`/`comment`/`close`/`label` callers. Slice 006
  * added `attach` for the one-time frame/architecture doc attachments. Slice 007
- * (this slice) adds `findTask`/`taskContext` — awaited, immediate (unbuffered)
- * lookups for the pull path (adopting an existing Todoist task), mirroring
- * `createTask`'s shape rather than the buffered `move`/`comment`/etc.
+ * added `findTask`/`taskContext` — awaited, immediate (unbuffered) lookups for
+ * the pull path (adopting an existing Todoist task), mirroring `createTask`'s
+ * shape rather than the buffered `move`/`comment`/etc. Slice 008 (this slice)
+ * adds `listSections`/`createSection` — the same awaited-immediate shape,
+ * used by the adopt path to reconcile an existing project's board sections
+ * before deciding `sectionMode`.
  */
 
 import { basename } from "node:path";
@@ -36,6 +39,12 @@ export const PHASE_SECTION: Partial<Record<Phase, string>> = {
 	done: "Ship",
 };
 
+/** The canonical 7-section board convention, in left-to-right board order —
+ * the distinct values of PHASE_SECTION. Used by setupTodoistStart's adopt
+ * branch to decide which sections (if any) are missing from an adopted
+ * task's project. */
+export const BOARD_SECTIONS = ["Frame", "Architect", "Plan", "Build", "Review", "Simplify", "Ship"] as const;
+
 /** A buffered board-sync operation: the Composio tool slug plus its params,
  * queued by a synchronous enqueue method and shipped in order by `flush()`. */
 export interface Op {
@@ -54,6 +63,13 @@ export interface Todoist {
 	 * and existing comments, used to seed an adopted run's feature description.
 	 * Fails soft to empty strings/array on any failure. */
 	taskContext(taskId: string): Promise<{ content: string; description: string; comments: string[] }>;
+	/** Awaited, immediate lookup (not buffered): the section names present in a
+	 * project. Fails soft to an empty array on any failure — never restructures
+	 * a project this couldn't read. */
+	listSections(project: string): Promise<string[]>;
+	/** Awaited, immediate op (not buffered): creates one section in a project.
+	 * Fails soft (never throws) on any failure. */
+	createSection(project: string, name: string): Promise<void>;
 	/** Synchronous, fail-soft enqueue: appends to the in-memory op buffer. Never
 	 * throws (a full/misbehaving buffer is swallowed, mirroring every other
 	 * method on this client). Nothing is enqueued by this slice's callers yet. */
@@ -88,6 +104,10 @@ export const NOOP: Todoist = {
 	async taskContext() {
 		return { content: "", description: "", comments: [] };
 	},
+	async listSections() {
+		return [];
+	},
+	async createSection() {},
 	move() {},
 	comment() {},
 	attach() {},
@@ -148,6 +168,23 @@ function parseComments(stdout: string): string[] {
 		const raw = parsed?.data;
 		const list = Array.isArray(raw) ? raw : (raw?.comments ?? raw?.results ?? []);
 		return list.filter((c): c is { content: string } => typeof c?.content === "string" && c.content.length > 0).map((c) => c.content);
+	} catch {
+		return [];
+	}
+}
+
+/** Best-effort extraction of section names from a TODOIST_LIST_SECTIONS
+ * response. The tool's own known-pitfalls note says results live under
+ * response.data.results (not a top-level array); the exact envelope was not
+ * confirmed against a live account (same unconfirmed-shape caveat as every
+ * other parser here). Non-string/blank names are dropped rather than guessed
+ * at. */
+function parseSectionNames(stdout: string): string[] {
+	try {
+		const parsed = JSON.parse(stdout) as { data?: { results?: Array<{ name?: unknown }> } | Array<{ name?: unknown }> };
+		const raw = parsed?.data;
+		const list = Array.isArray(raw) ? raw : (raw?.results ?? []);
+		return list.filter((s): s is { name: string } => typeof s?.name === "string" && s.name.length > 0).map((s) => s.name);
 	} catch {
 		return [];
 	}
@@ -232,6 +269,39 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 			} catch (e) {
 				if (opts.debug) console.error("[slice-flow todoist] taskContext threw:", e);
 				return { content: "", description: "", comments: [] };
+			}
+		},
+		// Confirmed via `composio tools info`: TODOIST_LIST_SECTIONS takes an
+		// optional project_id filter and returns the section names for that
+		// project. Used by setupTodoistStart's adopt branch to decide whether an
+		// adopted task's project already shows the board convention. Fails soft to
+		// [] on a nonzero exit or a thrown exec — a project we couldn't read is
+		// never restructured.
+		async listSections(project) {
+			try {
+				const res = await composioExec(exec, "TODOIST_LIST_SECTIONS", { project_id: project });
+				if (res.code !== 0) {
+					if (opts.debug) console.error("[slice-flow todoist] listSections failed:", res.stderr || res.stdout);
+					return [];
+				}
+				return parseSectionNames(res.stdout);
+			} catch (e) {
+				if (opts.debug) console.error("[slice-flow todoist] listSections threw:", e);
+				return [];
+			}
+		},
+		// Confirmed: TODOIST_CREATE_SECTION_V1 (the current, non-deprecated create-
+		// section op — TODOIST_CREATE_SECTION is marked deprecated in favor of this
+		// one) takes project_id + name. Awaited immediate op (not buffered) so the
+		// adopt-branch reconciliation loop can create only the sections actually
+		// missing before setupTodoistStart returns. Never throws; a failed create
+		// leaves that section missing but does not block the run.
+		async createSection(project, name) {
+			try {
+				const res = await composioExec(exec, "TODOIST_CREATE_SECTION_V1", { project_id: project, name });
+				if (res.code !== 0 && opts.debug) console.error("[slice-flow todoist] createSection failed:", res.stderr || res.stdout);
+			} catch (e) {
+				if (opts.debug) console.error("[slice-flow todoist] createSection threw:", e);
 			}
 		},
 		// Confirmed against the installed Composio CLI (search + tools info):

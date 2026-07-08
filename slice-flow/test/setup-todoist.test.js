@@ -121,7 +121,12 @@ test("a dismissed mode selection returns null and makes no composio call", async
  * (search), and TODOIST_GET_ALL_COMMENTS for the adopt-branch tests, and fails
  * (records but never succeeds) any TODOIST_CREATE_TASK call so a stray create
  * would be obvious. */
-function fakeAdoptExec(records, { taskId = "7", project = "99", content = "Fix the bug", description = "More detail", comments = ["first", "second"] } = {}) {
+// Defaults `sections` to the full board convention so this fixture's own
+// adopt-flow tests (predating slice 008's section reconciliation) keep
+// resolving to `sectionMode: "sections"` with zero createSection calls;
+// slice 008's own tests override `sections` to exercise partial/no-convention
+// projects.
+function fakeAdoptExec(records, { taskId = "7", project = "99", content = "Fix the bug", description = "More detail", comments = ["first", "second"], sections = ["Frame", "Architect", "Plan", "Build", "Review", "Simplify", "Ship"] } = {}) {
 	return async (cmd, args, opts) => {
 		records.push({ cmd, args, opts });
 		const tool = args[1];
@@ -132,6 +137,8 @@ function fakeAdoptExec(records, { taskId = "7", project = "99", content = "Fix t
 		}
 		if (tool === "TODOIST_FILTER_TASKS") return { code: 0, stdout: JSON.stringify({ data: { results: [{ id: taskId, project_id: project }] } }), stderr: "" };
 		if (tool === "TODOIST_GET_ALL_COMMENTS") return { code: 0, stdout: JSON.stringify({ data: { comments: comments.map((c) => ({ content: c })) } }), stderr: "" };
+		if (tool === "TODOIST_LIST_SECTIONS") return { code: 0, stdout: JSON.stringify({ data: { results: sections.map((name) => ({ name })) } }), stderr: "" };
+		if (tool === "TODOIST_CREATE_SECTION_V1") return { code: 0, stdout: "{}", stderr: "" };
 		return { code: 1, stdout: "", stderr: "unexpected tool in adopt test" };
 	};
 }
