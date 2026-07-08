@@ -80,7 +80,7 @@ import {
 	winnerOf,
 	workPaths,
 } from "./workspace.ts";
-import type { Directive, Paths, ReflectPaths, State } from "./workspace.ts";
+import type { Directive, Paths, Phase, ReflectPaths, State } from "./workspace.ts";
 import { createWorktree, repoRootOf, removeWorktree, validateWorktree } from "./worktree.ts";
 import type { Exec, WorktreeInfo } from "./worktree.ts";
 
@@ -258,8 +258,21 @@ export function issue(p: Paths, state: State, directive: Directive, preamble = "
 		.join("\n");
 }
 
-export function stopped(p: Paths, state: State, reason: string): string {
-	state.phase = "stopped";
+/**
+ * The single chokepoint for every phase transition: sets `state.phase`, logs a
+ * structured `"phase"`-kind line, and (in later slices, 004-006) will enqueue
+ * the Todoist board-sync body. Performs no `await` and no `saveState` — callers
+ * remain responsible for persistence, exactly as before this refactor.
+ */
+export function transitionPhase(state: State, next: Phase, reason: string, cfg: SliceFlowConfig): void {
+	const from = state.phase;
+	state.phase = next;
+	logEvent(state, `phase ${from} -> ${next}: ${reason}`, "phase");
+	// Todoist enqueue body is added in later slices (004–006); nothing here yet.
+}
+
+export function stopped(p: Paths, state: State, reason: string, cfg: SliceFlowConfig): string {
+	transitionPhase(state, "stopped", reason, cfg);
 	state.pending = null;
 	logEvent(state, `stopped: ${reason}`);
 	saveState(p, state);
@@ -303,7 +316,7 @@ async function runGate(env: Env, title: string, artifact: string, onRevise: (not
 	// human overrides per gate and tune each rubric over time.
 	recordGate(env.cfg, env.state, gateId ?? env.pending.kind, g.decision);
 	if (g.decision === "pause") return PAUSE_MSG(artifact, env.state.slug);
-	if (g.decision === "abort") return stopped(env.p, env.state, `user aborted at ${env.pending.kind} gate`);
+	if (g.decision === "abort") return stopped(env.p, env.state, `user aborted at ${env.pending.kind} gate`, env.cfg);
 	if (g.decision === "revise") {
 		logEvent(env.state, `${env.pending.kind} revision requested`);
 		return issue(env.p, env.state, onRevise(g.notes), "User requested revisions.");
@@ -475,7 +488,7 @@ async function onFrameCompiled(env: Env): Promise<string> {
 	const g = await gate(ctx, cfg, `Phase 1 (FRAME) complete — approve the frame?${warn}`, p.frame, "frame", lint.ok && judgeVerdict !== "FAIL");
 	recordGate(cfg, state, "frame", g.decision);
 	if (g.decision === "pause") return PAUSE_MSG(p.frame, state.slug);
-	if (g.decision === "abort") return stopped(p, state, "user aborted at frame gate");
+	if (g.decision === "abort") return stopped(p, state, "user aborted at frame gate", cfg);
 	if (g.decision === "revise") {
 		appendFileSync(p.ledger, `\n## Gate feedback (${new Date().toISOString()})\n\n${g.notes ?? ""}\n`, "utf8");
 		logEvent(state, "frame gate: changes requested -> back to explore", "phase");
@@ -485,8 +498,7 @@ async function onFrameCompiled(env: Env): Promise<string> {
 			"The user requested changes at the frame gate. Their feedback was appended to the ledger — work through it with the user, update the ledger, then converge again.",
 		);
 	}
-	state.phase = "architect";
-	logEvent(state, "frame approved");
+	transitionPhase(state, "architect", "frame approved", cfg);
 	return issue(p, state, architectDirective(p, state, cfg), `Frame approved (${p.frame}).`);
 }
 
@@ -562,7 +574,7 @@ async function architectGateAndAdvance(env: Env): Promise<string> {
 		const g = await gate(ctx, cfg, `Phase 2 (ARCHITECT) complete — approve the architecture?${warn}`, `${p.architecture} + ${p.archDispositions}`, "architect", valid && marker !== "RECONSIDER");
 		recordGate(cfg, state, "architect", g.decision);
 		if (g.decision === "pause") return PAUSE_MSG(p.architecture, state.slug);
-		if (g.decision === "abort") return stopped(p, state, "user aborted at architect gate");
+		if (g.decision === "abort") return stopped(p, state, "user aborted at architect gate", cfg);
 		if (g.decision === "revise") {
 			state.archRejudgeRetries = 0;
 			state.archReconsiderRetries = 0;
@@ -599,10 +611,10 @@ async function architectGateAndAdvance(env: Env): Promise<string> {
 	}
 	logEvent(state, `ui=${state.ui}`);
 	if (state.ui === "greenfield") {
-		state.phase = "prototype";
+		transitionPhase(state, "prototype", "architecture approved; greenfield prototyping", cfg);
 		return issue(p, state, prototypeDirective(p, state, cfg), "Architecture approved. Greenfield UI: prototyping first.");
 	}
-	state.phase = "plan";
+	transitionPhase(state, "plan", "architecture approved", cfg);
 	return issue(p, state, planDirective(p, state, cfg), "Architecture approved.");
 }
 
@@ -684,8 +696,7 @@ async function onPrototype(env: Env): Promise<string> {
 		lint.ok,
 	);
 	if (gated !== null) return gated;
-	state.phase = "plan";
-	logEvent(state, `prototype winner approved (${prototypeWinnerOf(judgement) ?? "?"})`);
+	transitionPhase(state, "plan", "prototype winner approved", cfg);
 	return issue(p, state, planDirective(p, state, cfg), `Prototype winner recorded in ${judgement}.`);
 }
 
@@ -751,8 +762,7 @@ async function onPlan(env: Env): Promise<string> {
 	state.slices = sliceFiles;
 	state.sliceIndex = 0;
 	state.fixupRound = 0;
-	state.phase = "implement";
-	logEvent(state, `plan approved with ${sliceFiles.length} slices`);
+	transitionPhase(state, "implement", "plan approved", cfg);
 	return issue(p, state, buildDirective(p, state, cfg), `Plan approved: ${sliceFiles.length} slices.`);
 }
 
@@ -779,13 +789,13 @@ async function onSliceReviewed(env: Env): Promise<string> {
 			logRetry(state, "fixup", `${a.sliceId} review FAIL -> fix-up round ${state.fixupRound}`);
 			return issue(p, state, fixupDirective(p, state, cfg), `Review of ${a.sliceId} FAILED (${a.reviewPath}). Spawning scoped fix-up.`);
 		}
-		if (!ctx.hasUI) return stopped(p, state, `${a.sliceId} still failing review after ${cfg.maxFixupsPerSlice} fix-ups`);
+		if (!ctx.hasUI) return stopped(p, state, `${a.sliceId} still failing review after ${cfg.maxFixupsPerSlice} fix-ups`, cfg);
 		const choice = await ctx.ui.select(
 			`${a.sliceId} still FAILS review after ${cfg.maxFixupsPerSlice} fix-up rounds. (See ${a.reviewPath})`,
 			["Run one more fix-up round", "Accept the slice anyway and continue", "Abort workflow"],
 		);
 		if (choice === undefined) return PAUSE_MSG(a.reviewPath, state.slug);
-		if (choice === "Abort workflow") return stopped(p, state, `user aborted: ${a.sliceId} failing review`);
+		if (choice === "Abort workflow") return stopped(p, state, `user aborted: ${a.sliceId} failing review`, cfg);
 		if (choice === "Run one more fix-up round") {
 			state.fixupRound += 1;
 			return issue(p, state, fixupDirective(p, state, cfg), "User requested another fix-up round.");
@@ -801,8 +811,7 @@ async function onSliceReviewed(env: Env): Promise<string> {
 	if (state.sliceIndex < state.slices.length) {
 		return issue(p, state, buildDirective(p, state, cfg), `${a.sliceId} complete.`);
 	}
-	state.phase = "verify";
-	logEvent(state, "all slices complete -> verify");
+	transitionPhase(state, "verify", "all slices complete", cfg);
 	return issue(p, state, verifyDirective(p, state, cfg), "All slices complete. Running independent verification.");
 }
 
@@ -855,7 +864,7 @@ async function onVerified(env: Env): Promise<string> {
 		// "warn" mode (default) it rides along on the completion gate as a notice.
 		const check = await runCheckPack(env);
 		if (check && !check.ok && cfg.checks.mode === "block") {
-			return stopped(p, state, `check-pack FAILED (block mode): ${check.findings.join("; ")}. See ${join(p.verify, "check-pack.md")}`);
+			return stopped(p, state, `check-pack FAILED (block mode): ${check.findings.join("; ")}. See ${join(p.verify, "check-pack.md")}`, cfg);
 		}
 		const checkWarn = check && !check.ok ? ` — note: check-pack found ${check.findings.length} issue(s) (warn mode; see ${join(p.verify, "check-pack.md")})` : "";
 		// Completion gate: the 5 refute verifiers are the mechanism; this gate is a
@@ -865,17 +874,16 @@ async function onVerified(env: Env): Promise<string> {
 		const g = await gate(env.ctx, cfg, `Verification clean on all 5 dimensions — accept and finish?${checkWarn}`, `${p.verify}/`, "verify", checkWarn === "");
 		recordGate(cfg, state, "verify", g.decision);
 		if (g.decision === "pause") return PAUSE_MSG(`${p.verify}/`, state.slug);
-		if (g.decision === "abort") return stopped(p, state, "user aborted at verify completion gate");
+		if (g.decision === "abort") return stopped(p, state, "user aborted at verify completion gate", cfg);
 		if (g.decision === "revise") {
 			// All dimensions pass, so there is no failed dimension to loop on. Record
 			// the feedback and stop deterministically rather than spinning an empty
 			// loop — the human re-runs /feature or opens a follow-up task.
 			if (g.notes) appendFileSync(join(p.verify, "_gate-feedback.md"), `\n## Completion gate feedback (${new Date().toISOString()})\n\n${g.notes}\n`, "utf8");
-			return stopped(p, state, `human requested changes at the verify completion gate; feedback recorded in ${p.verify}/_gate-feedback.md`);
+			return stopped(p, state, `human requested changes at the verify completion gate; feedback recorded in ${p.verify}/_gate-feedback.md`, cfg);
 		} else {
-			state.phase = "done";
+			transitionPhase(state, "done", "clean verification pass", cfg);
 			state.pending = null;
-			logEvent(state, "clean verification pass");
 			saveState(p, state);
 		// Dispose of the worktree (validate, prompt removal, record disposition)
 		// before telling the user the workflow is complete. Guarded so the
@@ -898,7 +906,7 @@ async function onVerified(env: Env): Promise<string> {
 	}
 
 	if (state.phase !== "loop") {
-		state.phase = "loop";
+		transitionPhase(state, "loop", state.failedDimensions.join(", ") || "verification failed", cfg);
 		state.loopIteration = 0;
 		state.loopStartTokens = state.tokensSpent;
 		state.loopCost = 0;
@@ -906,7 +914,7 @@ async function onVerified(env: Env): Promise<string> {
 	state.failedDimensions = failed;
 	if (state.loopIteration >= cfg.maxLoopIterations) {
 		writeBreachReport(p, state, cfg, `max loop iterations (${cfg.maxLoopIterations}) reached`);
-		return stopped(p, state, `loop limit reached with FAIL on: ${failed.join(", ")}. Report written to ${p.report}`);
+		return stopped(p, state, `loop limit reached with FAIL on: ${failed.join(", ")}. Report written to ${p.report}`, cfg);
 	}
 	// Account for the iteration about to be issued before spawning it: the fixer
 	// and verifier counts and models are fully known here, so the weighted spawn
@@ -915,7 +923,7 @@ async function onVerified(env: Env): Promise<string> {
 	if (state.loopCost + iterationCost > cfg.loopCostBudget) {
 		const projected = state.loopCost + iterationCost;
 		writeBreachReport(p, state, cfg, `loop cost budget exceeded (~${projected.toFixed(1)} > ${cfg.loopCostBudget} opus-equivalent spawns)`);
-		return stopped(p, state, `loop cost budget exceeded with FAIL on: ${failed.join(", ")}. Report written to ${p.report}`);
+		return stopped(p, state, `loop cost budget exceeded with FAIL on: ${failed.join(", ")}. Report written to ${p.report}`, cfg);
 	}
 	state.loopCost += iterationCost;
 	state.loopIteration += 1;
@@ -1192,9 +1200,9 @@ export async function nextStep(ctx: GateContext, p: Paths, cfg: SliceFlowConfig,
 	// The explore stage is interactive and has no pending directive; `next` just
 	// repeats the partner instructions (e.g. after /feature-resume).
 	if (!pending && state.phase === "frame" && state.frameStage === "explore") return exploreMessage(p, state.slug);
-	if (!pending) return stopped(p, state, "internal error: no pending directive");
+	if (!pending) return stopped(p, state, "internal error: no pending directive", cfg);
 	const handler = HANDLERS[pending.kind];
-	if (!handler) return stopped(p, state, `unknown pending directive kind "${pending.kind}"`);
+	if (!handler) return stopped(p, state, `unknown pending directive kind "${pending.kind}"`, cfg);
 	return handler({ ctx, p, cfg, state, pending, exec });
 }
 

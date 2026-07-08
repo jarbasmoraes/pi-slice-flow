@@ -207,7 +207,7 @@ export default function (pi: ExtensionAPI) {
 
 				case "abort": {
 					if (!state || !p) throw new Error("No slice-flow task to abort.");
-					return { content: [{ type: "text", text: stopped(p, state, params.note ?? "aborted via slice_flow tool") }], details: { slug } };
+					return { content: [{ type: "text", text: stopped(p, state, params.note ?? "aborted via slice_flow tool", cfg) }], details: { slug } };
 				}
 
 				case "next": {
