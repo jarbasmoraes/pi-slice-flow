@@ -285,6 +285,12 @@ export function stopped(p: Paths, state: State, reason: string, cfg: SliceFlowCo
 	state.pending = null;
 	logEvent(state, `stopped: ${reason}`);
 	saveState(p, state);
+	const td = state.todoist;
+	if (td?.taskId) {
+		const client = getTodoist(cfg);
+		client.label(td.taskId, "stopped");
+		client.comment(td.taskId, `Stopped: ${reason}`);
+	}
 	const wt = state.isolation?.worktree;
 	const worktreeNote = wt
 		? ` The worktree at ${wt.path} (branch ${wt.branch}) was left intact — inspect or remove it manually; nothing was auto-removed.`
@@ -894,6 +900,8 @@ async function onVerified(env: Env): Promise<string> {
 			transitionPhase(state, "done", "clean verification pass", cfg);
 			state.pending = null;
 			saveState(p, state);
+		const td = state.todoist;
+		if (td?.taskId) getTodoist(cfg).close(td.taskId);
 		// Dispose of the worktree (validate, prompt removal, record disposition)
 		// before telling the user the workflow is complete. Guarded so the
 		// many existing no-exec callers and worktree-less tasks are unaffected.
