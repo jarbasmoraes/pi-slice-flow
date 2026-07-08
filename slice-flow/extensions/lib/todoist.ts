@@ -48,6 +48,13 @@ export interface Todoist {
 	move(taskId: string, project: string, section: string): void;
 	/** Synchronous, fail-soft enqueue: see `move`. */
 	comment(taskId: string, text: string): void;
+	/** Synchronous, fail-soft enqueue: marks the task complete via
+	 * TODOIST_CLOSE_TASK_V1. See `move`. */
+	close(taskId: string): void;
+	/** Synchronous, fail-soft enqueue: appends the `stopped` label via a
+	 * TODOIST_UPDATE_TASK labels-replace op (see the implementation note on
+	 * `label` below for the known replace-vs-append caveat). See `move`. */
+	label(taskId: string, label: string): void;
 	/** Drains the op buffer over the Composio CLI, in insertion order, catching
 	 * every per-op error. Always resolves, even when every op throws. */
 	flush(): Promise<void>;
@@ -60,6 +67,8 @@ export const NOOP: Todoist = {
 	},
 	move() {},
 	comment() {},
+	close() {},
+	label() {},
 	async flush() {},
 };
 
@@ -129,6 +138,22 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 		// Confirmed: TODOIST_CREATE_COMMENT_V1 takes content + task_id.
 		comment(taskId, text) {
 			enqueue("TODOIST_CREATE_COMMENT_V1", { task_id: taskId, content: text });
+		},
+		// Confirmed: TODOIST_CLOSE_TASK_V1 takes only task_id.
+		close(taskId) {
+			enqueue("TODOIST_CLOSE_TASK_V1", { task_id: taskId });
+		},
+		// Confirmed: TODOIST_UPDATE_TASK's `labels` field is a full-replace, not an
+		// append ("Replaces the entire existing labels list") — there is no
+		// dedicated add-a-label-to-a-task op. This client never fetches the
+		// task's current labels first (no read-modify-write here), so this call
+		// sets the task's labels to exactly `[label]`, which will drop any other
+		// labels already on the task rather than appending to them. Fails soft
+		// like every other op (a live rejection is swallowed in flush below);
+		// see the memo for the same caveat pattern as move()'s mutual-exclusivity
+		// note.
+		label(taskId, label) {
+			enqueue("TODOIST_UPDATE_TASK", { task_id: taskId, labels: [label] });
 		},
 		async flush() {
 			const ops = buffer.splice(0, buffer.length);
