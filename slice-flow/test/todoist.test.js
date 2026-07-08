@@ -64,15 +64,34 @@ test("createTask omits section_id when the section name cannot be resolved (fail
 	assert.ok(!("section_id" in JSON.parse(create.args[3])), "unresolved section is dropped, not sent as a name");
 });
 
-test("listProjects returns id/name pairs parsed from TODOIST_GET_ALL_PROJECTS", async () => {
+test("listProjects parses TODOIST_GET_ALL_PROJECTS' real envelope: data.projects keyed by project_id", async () => {
 	const records = [];
 	const client = createTodoist({
 		enabled: true,
-		exec: fakeExec(records, () => ({ code: 0, stdout: JSON.stringify({ data: { results: [{ id: "1", name: "Inbox" }, { id: "2", name: "Work" }] } }), stderr: "" })),
+		// The real tool nests the list under data.projects with each entry keyed by
+		// project_id (not data.results / id) — parsing data.results here would
+		// silently yield [] and break the whole push path.
+		exec: fakeExec(records, () => ({ code: 0, stdout: JSON.stringify({ data: { projects: [{ project_id: "6XvwwRvRfmCjM5PW", name: "Inbox" }, { project_id: "6fm7p873Gr4m66Gw", name: "Work" }] } }), stderr: "" })),
 	});
 	const projects = await client.listProjects();
-	assert.deepEqual(projects, [{ id: "1", name: "Inbox" }, { id: "2", name: "Work" }]);
+	assert.deepEqual(projects, [{ id: "6XvwwRvRfmCjM5PW", name: "Inbox" }, { id: "6fm7p873Gr4m66Gw", name: "Work" }]);
 	assert.equal(records[0].args[1], "TODOIST_GET_ALL_PROJECTS");
+});
+
+test("createSection skips a legacy-numeric project id (TODOIST_CREATE_SECTION_V1 rejects it) and runs for a v1 id", async () => {
+	const legacyRecords = [];
+	const legacy = createTodoist({ enabled: true, exec: fakeExec(legacyRecords, () => ({ code: 0, stdout: "{}", stderr: "" })) });
+	await legacy.createSection("2203306141", "Build");
+	assert.ok(!legacyRecords.some((r) => r.args[1] === "TODOIST_CREATE_SECTION_V1"), "no create call for a legacy numeric project id");
+
+	const v1Records = [];
+	const v1 = createTodoist({ enabled: true, exec: fakeExec(v1Records, () => ({ code: 0, stdout: "{}", stderr: "" })) });
+	await v1.createSection("6XvwwRvRfmCjM5PW", "Build");
+	const call = v1Records.find((r) => r.args[1] === "TODOIST_CREATE_SECTION_V1");
+	assert.ok(call, "creates the section for a v1-format project id");
+	const params = JSON.parse(call.args[3]);
+	assert.equal(params.project_id, "6XvwwRvRfmCjM5PW");
+	assert.equal(params.name, "Build");
 });
 
 test("listProjects fails soft to [] on a nonzero exit", async () => {

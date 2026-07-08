@@ -50,7 +50,7 @@ test("frame -> architect moves with the resolved section_id only and comments th
 	assert.equal(state.phase, "architect");
 
 	await getTodoist(cfg).flush();
-	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK_REST_API");
 	assert.ok(move, "issued a move");
 	const moveParams = JSON.parse(move.args[3]);
 	assert.equal(moveParams.task_id, "t1");
@@ -71,7 +71,7 @@ test("plan -> implement moves to the resolved Build section id", async () => {
 	transitionPhase(state, "implement", "plan approved", cfg);
 
 	await getTodoist(cfg).flush();
-	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK_REST_API");
 	assert.equal(JSON.parse(move.args[3]).section_id, "sec-Build");
 });
 
@@ -95,7 +95,7 @@ test("verify -> done moves to the resolved Ship section id", async () => {
 	transitionPhase(state, "done", "clean verification pass", cfg);
 
 	await getTodoist(cfg).flush();
-	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK_REST_API");
 	assert.equal(JSON.parse(move.args[3]).section_id, "sec-Ship");
 });
 
@@ -110,7 +110,7 @@ test("a move whose section cannot be resolved is skipped rather than sent with a
 	transitionPhase(state, "architect", "frame approved", cfg);
 
 	await getTodoist(cfg).flush();
-	assert.ok(!records.some((r) => r.args[1] === "TODOIST_MOVE_TASK"), "no move issued when the section id is unknown (never sends a name as an id)");
+	assert.ok(!records.some((r) => r.args[1] === "TODOIST_MOVE_TASK_REST_API"), "no move issued when the section id is unknown (never sends a name as an id)");
 });
 
 // --- Same-section transitions enqueue nothing (criterion 3 anchor case) ------

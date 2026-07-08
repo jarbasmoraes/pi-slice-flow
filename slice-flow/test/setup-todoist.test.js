@@ -49,11 +49,12 @@ test("with cfg.todoist.enabled false, returns null and makes no composio call (c
 
 /** Exec for the push path: answers the project picker (GET_ALL_PROJECTS), the
  * Frame-section resolution (LIST_SECTIONS), and the create (CREATE_TASK). */
-function fakePushExec(records, { projects = [{ id: "10", name: "MyProj" }], sections = [{ id: "500", name: "Frame" }], createId = "42", createCode = 0 } = {}) {
+function fakePushExec(records, { projects = [{ project_id: "10", name: "MyProj" }], sections = [{ id: "500", name: "Frame" }], createId = "42", createCode = 0 } = {}) {
 	return async (cmd, args, opts) => {
 		records.push({ cmd, args, opts });
 		const tool = args[1];
-		if (tool === "TODOIST_GET_ALL_PROJECTS") return { code: 0, stdout: JSON.stringify({ data: { results: projects } }), stderr: "" };
+		// The real TODOIST_GET_ALL_PROJECTS envelope: data.projects keyed by project_id.
+		if (tool === "TODOIST_GET_ALL_PROJECTS") return { code: 0, stdout: JSON.stringify({ data: { projects } }), stderr: "" };
 		if (tool === "TODOIST_LIST_SECTIONS") return { code: 0, stdout: JSON.stringify({ data: { results: sections } }), stderr: "" };
 		if (tool === "TODOIST_CREATE_TASK") return { code: createCode, stdout: createCode === 0 ? JSON.stringify({ data: { id: createId } }) : "", stderr: createCode === 0 ? "" : "not linked" };
 		return { code: 1, stdout: "", stderr: "unexpected tool in push test" };

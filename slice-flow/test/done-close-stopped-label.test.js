@@ -62,7 +62,7 @@ test("a clean verification pass enqueues a move to Ship then a close, in order",
 	assert.match(out, /COMPLETE/);
 
 	await getTodoist(cfg).flush();
-	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK_REST_API");
 	const comment = records.find((r) => r.args[1] === "TODOIST_CREATE_COMMENT_V1");
 	const close = records.find((r) => r.args[1] === "TODOIST_CLOSE_TASK_V1");
 	assert.ok(move && comment && close, "move + comment + close all issued");
@@ -105,7 +105,7 @@ test("stopped enqueues a stopped label and a comment with the reason, but no mov
 	assert.equal(state.phase, "stopped");
 
 	await getTodoist(cfg).flush();
-	assert.ok(!records.some((r) => r.args[1] === "TODOIST_MOVE_TASK"), "no move when stopping");
+	assert.ok(!records.some((r) => r.args[1] === "TODOIST_MOVE_TASK_REST_API"), "no move when stopping");
 	const update = records.find((r) => r.args[1] === "TODOIST_UPDATE_TASK");
 	assert.ok(update, "the stopped label is applied via an update");
 	const labelParams = JSON.parse(update.args[3]);
