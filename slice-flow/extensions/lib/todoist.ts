@@ -14,6 +14,23 @@
 
 import type { SliceFlowConfig } from "./config.ts";
 import type { Exec } from "./worktree.ts";
+import type { Phase } from "./workspace.ts";
+
+/** Maps a workflow phase to the Todoist board section it lives in while that
+ * phase is active. `stopped` is intentionally absent (no section => never
+ * moved). Used by `transitionPhase` to decide whether a transition crosses a
+ * section boundary (enqueue move+comment) or stays within one (enqueue
+ * nothing). */
+export const PHASE_SECTION: Partial<Record<Phase, string>> = {
+	frame: "Frame",
+	architect: "Architect",
+	prototype: "Architect",
+	plan: "Plan",
+	implement: "Build",
+	verify: "Review",
+	loop: "Simplify",
+	done: "Ship",
+};
 
 /** A buffered board-sync operation: the Composio tool slug plus its params,
  * queued by a synchronous enqueue method and shipped in order by `flush()`. */
