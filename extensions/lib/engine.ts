@@ -514,6 +514,13 @@ async function onFrameCompiled(env: Env): Promise<string> {
 		);
 	}
 	transitionPhase(state, "architect", "frame approved", cfg);
+	const td = state.todoist;
+	if (td?.taskId && !td.attachedFrame) {
+		const client = getTodoist(cfg);
+		client.attach(td.taskId, p.ledger);
+		client.attach(td.taskId, p.frame);
+		td.attachedFrame = true;
+	}
 	return issue(p, state, architectDirective(p, state, cfg), `Frame approved (${p.frame}).`);
 }
 
@@ -627,10 +634,24 @@ async function architectGateAndAdvance(env: Env): Promise<string> {
 	logEvent(state, `ui=${state.ui}`);
 	if (state.ui === "greenfield") {
 		transitionPhase(state, "prototype", "architecture approved; greenfield prototyping", cfg);
+		attachArchDoc(state, p, cfg);
 		return issue(p, state, prototypeDirective(p, state, cfg), "Architecture approved. Greenfield UI: prototyping first.");
 	}
 	transitionPhase(state, "plan", "architecture approved", cfg);
+	attachArchDoc(state, p, cfg);
 	return issue(p, state, planDirective(p, state, cfg), "Architecture approved.");
+}
+
+/** Attach 02-architecture.md once, guarded by `attachedArch`, on either
+ * architect-phase exit (greenfield -> prototype, or -> plan). Independent of
+ * the section-move skip: the greenfield exit doesn't change section, but the
+ * doc must still attach. */
+function attachArchDoc(state: State, p: Paths, cfg: SliceFlowConfig): void {
+	const td = state.todoist;
+	if (td?.taskId && !td.attachedArch) {
+		getTodoist(cfg).attach(td.taskId, p.architecture);
+		td.attachedArch = true;
+	}
 }
 
 /** The attack panel completed: validate its output, route a RECONSIDER through
