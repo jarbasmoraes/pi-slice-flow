@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GateName, SliceFlowConfig } from "./config.ts";
 import { getTelemetry } from "./telemetry.ts";
-import { PHASE_SECTION, getTodoist } from "./todoist.ts";
+import { BOARD_SECTIONS, PHASE_SECTION, getTodoist } from "./todoist.ts";
 import {
 	REFLECT_RUBRICS,
 	archAttackDirective,
@@ -128,11 +128,16 @@ export async function setupWorktree(
 /**
  * Todoist integration entry point for a run's start: when Todoist is enabled
  * and a UI is present, ask whether to create a new tracking task (the slice
- * 001 push path) or adopt an existing one (the pull path, this slice), then
- * either creates a task in its "Frame" section or resolves + reads an existing
- * task and seeds the run's feature description from it. Returns null (and
- * makes no Composio call beyond any lookup already fired) with no UI, when
- * Todoist is disabled, when the client is a no-op, on a dismissed/blank
+ * 001 push path) or adopt an existing one (the pull path, slice 007). The
+ * push path always creates a task in its "Frame" section with
+ * `sectionMode: "sections"`. The adopt path resolves + reads an existing task,
+ * seeds the run's feature description from it, then (slice 008, this slice)
+ * reconciles the adopted task's project against the 7-section board
+ * convention: some sections present ⇒ create only the missing ones and use
+ * `sectionMode: "sections"`; none present ⇒ create nothing and fall back to
+ * `sectionMode: "comment-only"` so an unconventional project is never
+ * restructured. Returns null (and makes no Composio create call) with no UI,
+ * when Todoist is disabled, when the client is a no-op, on a dismissed/blank
  * prompt, or on any failure — fail-soft end to end, mirroring setupWorktree.
  * Nothing is persisted here; the caller threads the result into startWorkflow.
  */
@@ -158,7 +163,19 @@ export async function setupTodoistStart(
 			}
 			const info = await client.taskContext(found.taskId);
 			const seed = [info.content, info.description, ...info.comments].map((s) => (s ?? "").trim()).filter(Boolean).join("\n\n");
-			return { taskId: found.taskId, project: found.project, sectionMode: "sections", seed };
+			const existing = await client.listSections(found.project); // fail-soft ⇒ []
+			const present = BOARD_SECTIONS.filter((s) => existing.includes(s));
+			let sectionMode: "sections" | "comment-only";
+			if (present.length === 0) {
+				sectionMode = "comment-only"; // no convention present ⇒ don't restructure this project
+			} else {
+				sectionMode = "sections";
+				for (const s of BOARD_SECTIONS) {
+					// create only the missing ones
+					if (!existing.includes(s)) await client.createSection(found.project, s);
+				}
+			}
+			return { taskId: found.taskId, project: found.project, sectionMode, seed };
 		}
 		const project = await ctx.ui.input("Todoist project for this run?", "Project name/id to track this run, blank to skip Todoist");
 		if (!project || !project.trim()) return null;
@@ -276,9 +293,14 @@ export function issue(p: Paths, state: State, directive: Directive, preamble = "
 
 /**
  * The single chokepoint for every phase transition: sets `state.phase`, logs a
- * structured `"phase"`-kind line, and (in later slices, 004-006) will enqueue
- * the Todoist board-sync body. Performs no `await` and no `saveState` — callers
- * remain responsible for persistence, exactly as before this refactor.
+ * structured `"phase"`-kind line, and enqueues the Todoist board-sync body
+ * (added in slices 004-006). A `sectionMode: "sections"` run moves + comments
+ * only when the mapped section actually changes; a `sectionMode: "comment-only"`
+ * run (slice 008, the pull-path fallback for a project with no board
+ * convention) never moves — it enqueues a plain phase+reason comment on every
+ * transition instead, so progress is still tracked without restructuring the
+ * project. Performs no `await` and no `saveState` — callers remain
+ * responsible for persistence, exactly as before slice 002's refactor.
  */
 export function transitionPhase(state: State, next: Phase, reason: string, cfg: SliceFlowConfig): void {
 	const from = state.phase;
@@ -290,7 +312,9 @@ export function transitionPhase(state: State, next: Phase, reason: string, cfg: 
 	if (!client.enabled) return;
 	const fromSec = PHASE_SECTION[from];
 	const toSec = PHASE_SECTION[next];
-	if (td.sectionMode === "sections" && toSec && toSec !== fromSec) {
+	if (td.sectionMode === "comment-only") {
+		client.comment(td.taskId, `${next}: ${reason}`);
+	} else if (toSec && toSec !== fromSec) {
 		client.move(td.taskId, td.project, toSec);
 		client.comment(td.taskId, `Moved to ${toSec}: ${reason}`);
 	}
