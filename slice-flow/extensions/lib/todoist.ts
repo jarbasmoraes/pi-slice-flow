@@ -46,14 +46,29 @@ export const PHASE_SECTION: Partial<Record<Phase, string>> = {
 export const BOARD_SECTIONS = ["Frame", "Architect", "Plan", "Build", "Review", "Simplify", "Ship"] as const;
 
 /** A buffered board-sync operation: the Composio tool slug plus its params,
- * queued by a synchronous enqueue method and shipped in order by `flush()`. */
+ * queued by a synchronous enqueue method and shipped in order by `flush()`.
+ * `kind` marks the ops that need multi-step / resolved handling at flush time
+ * (a plain op is shipped verbatim as a single `composio execute`):
+ *   - "move"   resolve the section NAME to its id, then move with section_id only
+ *   - "attach" upload the local file, then create a file comment with the url
+ *   - "label"  read the task's current labels, then append (never replace) */
 export interface Op {
 	tool: string;
 	params: Record<string, unknown>;
+	kind?: "move" | "attach" | "label";
 }
 
 export interface Todoist {
 	readonly enabled: boolean;
+	/** Awaited, immediate lookup: the account's projects as `{ id, name }` pairs,
+	 * so the push path can offer a picker of EXISTING projects and create against
+	 * a real project id (Todoist project names are not unique and cannot be used
+	 * as ids). Fails soft to [] on any failure. */
+	listProjects(): Promise<Array<{ id: string; name: string }>>;
+	/** Create a task. `project` MUST be a project id; `section` (optional) is a
+	 * section NAME that is resolved to its id before the task is created (an
+	 * unresolved section is dropped). Returns the new task id, or null on any
+	 * failure. */
 	createTask(a: { project: string; section?: string; content: string }): Promise<string | null>;
 	/** Awaited, immediate lookup (not buffered): finds a task by name or id.
 	 * Tries an id lookup first, falls back to a text search; returns null when
@@ -70,23 +85,23 @@ export interface Todoist {
 	/** Awaited, immediate op (not buffered): creates one section in a project.
 	 * Fails soft (never throws) on any failure. */
 	createSection(project: string, name: string): Promise<void>;
-	/** Synchronous, fail-soft enqueue: appends to the in-memory op buffer. Never
-	 * throws (a full/misbehaving buffer is swallowed, mirroring every other
-	 * method on this client). Nothing is enqueued by this slice's callers yet. */
+	/** Synchronous, fail-soft enqueue of a section-changing move. `project` is a
+	 * project id, `section` a section NAME; the name is resolved to a section id
+	 * and the move is sent with section_id only at flush time. Never throws. */
 	move(taskId: string, project: string, section: string): void;
 	/** Synchronous, fail-soft enqueue: see `move`. */
 	comment(taskId: string, text: string): void;
-	/** Synchronous, fail-soft enqueue: attaches a file as a Todoist "file comment"
-	 * via TODOIST_CREATE_COMMENT_V1's `attachment` param (see the implementation
-	 * note on `attach` below for the known file_url-vs-local-path caveat). See
-	 * `move`. */
+	/** Synchronous, fail-soft enqueue of a file comment: at flush the local file
+	 * is uploaded (TODOIST_UPLOAD_FILE) to obtain a hosted file_url, then a
+	 * TODOIST_CREATE_COMMENT_V1 file comment references that url. See `move`. */
 	attach(taskId: string, filePath: string): void;
 	/** Synchronous, fail-soft enqueue: marks the task complete via
 	 * TODOIST_CLOSE_TASK_V1. See `move`. */
 	close(taskId: string): void;
-	/** Synchronous, fail-soft enqueue: appends the `stopped` label via a
-	 * TODOIST_UPDATE_TASK labels-replace op (see the implementation note on
-	 * `label` below for the known replace-vs-append caveat). See `move`. */
+	/** Synchronous, fail-soft enqueue of a non-destructive label add: at flush the
+	 * task's current labels are read and the union with `label` is applied (the
+	 * label is ensured to exist first), never replacing existing labels. See
+	 * `move`. */
 	label(taskId: string, label: string): void;
 	/** Drains the op buffer over the Composio CLI, in insertion order, catching
 	 * every per-op error. Always resolves, even when every op throws. */
@@ -95,6 +110,9 @@ export interface Todoist {
 
 export const NOOP: Todoist = {
 	enabled: false,
+	async listProjects() {
+		return [];
+	},
 	async createTask() {
 		return null;
 	},
@@ -121,8 +139,45 @@ export const NOOP: Todoist = {
  * passed as `-d <json>`, not `--params` (see memo for the correction and the
  * open question on the create-success response shape). Hard 5s timeout so a
  * hung CLI can never stall the workflow. */
-async function composioExec(exec: Exec, tool: string, params: Record<string, unknown>): Promise<{ code: number; stdout: string; stderr: string }> {
-	return exec("composio", ["execute", tool, "-d", JSON.stringify(params)], { timeout: 5000 });
+async function composioExec(exec: Exec, tool: string, params: Record<string, unknown>, filePath?: string): Promise<{ code: number; stdout: string; stderr: string }> {
+	const args = ["execute", tool, "-d", JSON.stringify(params)];
+	// The CLI injects a local file into the single file_uploadable input via
+	// --file (used by TODOIST_UPLOAD_FILE); -d carries the other params.
+	if (filePath) args.push("--file", filePath);
+	return exec("composio", args, { timeout: 5000 });
+}
+
+/** Best-effort extraction of `{ id, name }` pairs from a list response
+ * (TODOIST_GET_ALL_PROJECTS, TODOIST_LIST_SECTIONS). Composio nests the list
+ * under response.data.results (see the tools' own known-pitfalls); entries
+ * missing an id or name are dropped rather than guessed at. */
+function parseNamedList(stdout: string): Array<{ id: string; name: string }> {
+	try {
+		const parsed = JSON.parse(stdout) as { data?: { results?: Array<{ id?: unknown; name?: unknown }> } | Array<{ id?: unknown; name?: unknown }> };
+		const raw = parsed?.data;
+		const list = Array.isArray(raw) ? raw : (raw?.results ?? []);
+		return list
+			.filter((x): x is { id: unknown; name: string } => typeof x?.name === "string" && x.name.length > 0 && x?.id !== undefined && x?.id !== null)
+			.map((x) => ({ id: String(x.id), name: x.name }));
+	} catch {
+		return [];
+	}
+}
+
+/** Best-effort extraction of the Todoist upload attachment metadata from a
+ * TODOIST_UPLOAD_FILE response. Returns null (⇒ the caller skips the comment)
+ * unless a hosted `file_url` is present — never falls back to a local path. */
+function parseUpload(stdout: string): { file_url: string; file_name?: string; file_type?: string; resource_type?: string } | null {
+	try {
+		const parsed = JSON.parse(stdout) as { data?: Record<string, unknown> } & Record<string, unknown>;
+		const d = (parsed?.data ?? parsed) as Record<string, unknown>;
+		if (typeof d?.file_url !== "string" || !d.file_url) return null;
+		const att: { file_url: string; file_name?: string; file_type?: string; resource_type?: string } = { file_url: d.file_url };
+		for (const k of ["file_name", "file_type", "resource_type"] as const) if (typeof d[k] === "string") att[k] = d[k] as string;
+		return att;
+	} catch {
+		return null;
+	}
 }
 
 /** Best-effort extraction of the created task id from a `composio execute`
@@ -198,17 +253,108 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 	if (!opts.enabled || !opts.exec) return NOOP;
 	const exec = opts.exec;
 	const buffer: Op[] = [];
-	const enqueue = (tool: string, params: Record<string, unknown>) => {
+	const enqueue = (tool: string, params: Record<string, unknown>, kind?: Op["kind"]) => {
 		try {
-			buffer.push({ tool, params });
+			buffer.push({ tool, params, kind });
 		} catch {}
 	};
+
+	// Section id resolution, memoized per project id for a run: Todoist requires
+	// a numeric section id (never a display name) for create/move. Fails soft to
+	// null so a section this couldn't resolve is skipped rather than sent as a name.
+	const sectionCache = new Map<string, Map<string, string>>();
+	async function resolveSectionId(projectId: string, name: string): Promise<string | null> {
+		let byName = sectionCache.get(projectId);
+		if (!byName) {
+			byName = new Map();
+			try {
+				const res = await composioExec(exec, "TODOIST_LIST_SECTIONS", { project_id: projectId });
+				if (res.code === 0) for (const s of parseNamedList(res.stdout)) byName.set(s.name.toLowerCase(), s.id);
+			} catch {}
+			sectionCache.set(projectId, byName);
+		}
+		return byName.get(name.toLowerCase()) ?? null;
+	}
+
+	// A move enqueues the section NAME (transitionPhase is synchronous and cannot
+	// resolve); flush resolves it to an id here and sends section_id ONLY, since
+	// project_id/section_id/parent_id are mutually exclusive on TODOIST_MOVE_TASK.
+	async function runMove(p: Record<string, unknown>): Promise<void> {
+		const sectionId = await resolveSectionId(String(p.project), String(p.section));
+		if (!sectionId) {
+			if (opts.debug) console.error(`[slice-flow todoist] move skipped: no section id for "${String(p.section)}"`);
+			return;
+		}
+		const res = await composioExec(exec, "TODOIST_MOVE_TASK", { task_id: p.task_id, section_id: sectionId });
+		if (res.code !== 0 && opts.debug) console.error("[slice-flow todoist] move failed:", res.stderr || res.stdout);
+	}
+
+	// Todoist cannot fetch a local path, so an attach is upload-then-comment:
+	// upload the file to obtain a hosted file_url + metadata, then create the file
+	// comment referencing that url. A failed/incomplete upload skips the comment.
+	async function runAttach(p: Record<string, unknown>): Promise<void> {
+		const filePath = String(p.filePath);
+		const up = await composioExec(exec, "TODOIST_UPLOAD_FILE", {}, filePath);
+		if (up.code !== 0) {
+			if (opts.debug) console.error("[slice-flow todoist] upload failed:", up.stderr || up.stdout);
+			return;
+		}
+		const att = parseUpload(up.stdout);
+		if (!att) {
+			if (opts.debug) console.error("[slice-flow todoist] upload returned no file_url; skipping attachment");
+			return;
+		}
+		await composioExec(exec, "TODOIST_CREATE_COMMENT_V1", { task_id: p.task_id, content: `Attached: ${att.file_name ?? basename(filePath)}`, attachment: att });
+	}
+
+	// Todoist's labels field REPLACES the whole list and silently ignores unknown
+	// names, so a stopped label is applied as read-modify-write: read the task's
+	// current labels, no-op if already present, otherwise ensure the label exists
+	// (a duplicate-name create fails soft) and update with the union.
+	async function runLabel(p: Record<string, unknown>): Promise<void> {
+		const taskId = String(p.task_id);
+		const label = String(p.label);
+		const current = await currentLabels(taskId);
+		if (current.includes(label)) return;
+		await composioExec(exec, "TODOIST_CREATE_LABEL_V1", { name: label });
+		const res = await composioExec(exec, "TODOIST_UPDATE_TASK", { task_id: taskId, labels: [...current, label] });
+		if (res.code !== 0 && opts.debug) console.error("[slice-flow todoist] label update failed:", res.stderr || res.stdout);
+	}
+
+	async function currentLabels(taskId: string): Promise<string[]> {
+		try {
+			const res = await composioExec(exec, "TODOIST_GET_TASK2", { task_id: taskId });
+			if (res.code !== 0) return [];
+			const parsed = JSON.parse(res.stdout) as { data?: { labels?: unknown; task?: { labels?: unknown } } };
+			const labels = parsed?.data?.task?.labels ?? parsed?.data?.labels;
+			return Array.isArray(labels) ? labels.filter((l): l is string => typeof l === "string") : [];
+		} catch {
+			return [];
+		}
+	}
+
 	return {
 		enabled: true,
+		async listProjects() {
+			try {
+				const res = await composioExec(exec, "TODOIST_GET_ALL_PROJECTS", {});
+				if (res.code !== 0) {
+					if (opts.debug) console.error("[slice-flow todoist] listProjects failed:", res.stderr || res.stdout);
+					return [];
+				}
+				return parseNamedList(res.stdout);
+			} catch (e) {
+				if (opts.debug) console.error("[slice-flow todoist] listProjects threw:", e);
+				return [];
+			}
+		},
 		async createTask(a) {
 			try {
 				const params: Record<string, unknown> = { content: a.content, project_id: a.project };
-				if (a.section) params.section_id = a.section;
+				if (a.section) {
+					const sectionId = await resolveSectionId(a.project, a.section);
+					if (sectionId) params.section_id = sectionId;
+				}
 				const res = await composioExec(exec, "TODOIST_CREATE_TASK", params);
 				if (res.code !== 0) {
 					if (opts.debug) console.error("[slice-flow todoist] create failed:", res.stderr || res.stdout);
@@ -304,61 +450,41 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 				if (opts.debug) console.error("[slice-flow todoist] createSection threw:", e);
 			}
 		},
-		// Confirmed against the installed Composio CLI (search + tools info):
-		// TODOIST_MOVE_TASK takes task_id plus exactly one of project_id/
-		// section_id/parent_id. This slice's contract fixes the move(taskId,
-		// project, section) signature; passing both project_id and section_id
-		// together will be rejected by a live Composio call (fails soft, caught
-		// in flush below) — resolving that mutual-exclusivity is out of scope
-		// here since nothing calls move() until slices 004-006 (see memo).
+		// A section-changing move. `project` is a project id and `section` a section
+		// NAME; flush resolves the name to a section id and moves with section_id
+		// only (TODOIST_MOVE_TASK's project_id/section_id/parent_id are mutually
+		// exclusive).
 		move(taskId, project, section) {
-			enqueue("TODOIST_MOVE_TASK", { task_id: taskId, project_id: project, section_id: section });
+			enqueue("TODOIST_MOVE_TASK", { task_id: taskId, project, section }, "move");
 		},
 		// Confirmed: TODOIST_CREATE_COMMENT_V1 takes content + task_id.
 		comment(taskId, text) {
 			enqueue("TODOIST_CREATE_COMMENT_V1", { task_id: taskId, content: text });
 		},
-		// Confirmed via `composio search "attach file" --toolkits todoist`: a
-		// Todoist "file comment" is TODOIST_CREATE_COMMENT_V1 with an `attachment`
-		// object, per the tool's own schema (attachment.file_url/file_name). The
-		// real flow the CLI's own recommended plan describes is two calls
-		// (TODOIST_UPLOAD_FILE to get a hosted file_url, then this comment with
-		// that url) — this slice's contract fixes attach(taskId, filePath) as one
-		// synchronous, single-op enqueue, so `filePath` (a local run-artifact path,
-		// not an uploaded URL) is passed straight through as `attachment.file_url`.
-		// A live call will very likely reject this (or accept it but render an
-		// unreachable link) since Todoist cannot fetch a local path; this fails
-		// soft like every other guessed param shape in this client (swallowed in
-		// flush below). See the memo for the fix (upload-then-comment chaining)
-		// this slice deliberately does not build.
+		// A file comment: flush uploads the local file (TODOIST_UPLOAD_FILE) to get
+		// a hosted file_url, then creates the comment with that attachment. See
+		// runAttach above.
 		attach(taskId, filePath) {
-			enqueue("TODOIST_CREATE_COMMENT_V1", {
-				task_id: taskId,
-				content: `Attached: ${basename(filePath)}`,
-				attachment: { file_url: filePath, file_name: basename(filePath) },
-			});
+			enqueue("TODOIST_UPLOAD_FILE", { task_id: taskId, filePath }, "attach");
 		},
 		// Confirmed: TODOIST_CLOSE_TASK_V1 takes only task_id.
 		close(taskId) {
 			enqueue("TODOIST_CLOSE_TASK_V1", { task_id: taskId });
 		},
-		// Confirmed: TODOIST_UPDATE_TASK's `labels` field is a full-replace, not an
-		// append ("Replaces the entire existing labels list") — there is no
-		// dedicated add-a-label-to-a-task op. This client never fetches the
-		// task's current labels first (no read-modify-write here), so this call
-		// sets the task's labels to exactly `[label]`, which will drop any other
-		// labels already on the task rather than appending to them. Fails soft
-		// like every other op (a live rejection is swallowed in flush below);
-		// see the memo for the same caveat pattern as move()'s mutual-exclusivity
-		// note.
+		// A non-destructive label add: flush reads the task's current labels and
+		// applies their union with `label` (ensuring the label exists first). See
+		// runLabel above.
 		label(taskId, label) {
-			enqueue("TODOIST_UPDATE_TASK", { task_id: taskId, labels: [label] });
+			enqueue("TODOIST_UPDATE_TASK", { task_id: taskId, label }, "label");
 		},
 		async flush() {
 			const ops = buffer.splice(0, buffer.length);
 			for (const op of ops) {
 				try {
-					await composioExec(exec, op.tool, op.params);
+					if (op.kind === "move") await runMove(op.params);
+					else if (op.kind === "attach") await runAttach(op.params);
+					else if (op.kind === "label") await runLabel(op.params);
+					else await composioExec(exec, op.tool, op.params);
 				} catch (e) {
 					if (opts.debug) console.error("[slice-flow todoist] op failed:", e);
 				}

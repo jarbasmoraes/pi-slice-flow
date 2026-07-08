@@ -47,51 +47,73 @@ test("with cfg.todoist.enabled false, returns null and makes no composio call (c
 	resetTodoist();
 });
 
-test("with UI and todoist enabled, prompts for a project and issues exactly one composio create call (criterion 1, 12)", async () => {
+/** Exec for the push path: answers the project picker (GET_ALL_PROJECTS), the
+ * Frame-section resolution (LIST_SECTIONS), and the create (CREATE_TASK). */
+function fakePushExec(records, { projects = [{ id: "10", name: "MyProj" }], sections = [{ id: "500", name: "Frame" }], createId = "42", createCode = 0 } = {}) {
+	return async (cmd, args, opts) => {
+		records.push({ cmd, args, opts });
+		const tool = args[1];
+		if (tool === "TODOIST_GET_ALL_PROJECTS") return { code: 0, stdout: JSON.stringify({ data: { results: projects } }), stderr: "" };
+		if (tool === "TODOIST_LIST_SECTIONS") return { code: 0, stdout: JSON.stringify({ data: { results: sections } }), stderr: "" };
+		if (tool === "TODOIST_CREATE_TASK") return { code: createCode, stdout: createCode === 0 ? JSON.stringify({ data: { id: createId } }) : "", stderr: createCode === 0 ? "" : "not linked" };
+		return { code: 1, stdout: "", stderr: "unexpected tool in push test" };
+	};
+}
+
+/** Default push ctx: picks "Create a new Todoist task" at the mode select and
+ * the first offered project at the project picker. */
+function pushCtx(overrides = {}) {
+	return fakeCtx({
+		select: async (title, options) => (options.includes("Create a new Todoist task") ? "Create a new Todoist task" : options[0]),
+		...overrides,
+	});
+}
+
+test("with UI and todoist enabled, PICKS an existing project and creates the task in the resolved Frame section (criterion 1, 12)", async () => {
 	resetTodoist();
 	const records = [];
-	const inputCalls = [];
-	const ctx = fakeCtx({
-		input: async (title, placeholder) => {
-			inputCalls.push({ title, placeholder });
-			return "MyProj";
+	const selectCalls = [];
+	const ctx = pushCtx({
+		select: async (title, options) => {
+			selectCalls.push({ title, options });
+			return options.includes("Create a new Todoist task") ? "Create a new Todoist task" : "MyProj";
 		},
 	});
-	const result = await setupTodoistStart(ctx, enabledCfg, fakeExec(records), "Feature X");
-	assert.equal(inputCalls.length, 1, "prompted exactly once for a project");
-	assert.equal(records.length, 1, "exactly one composio create call");
-	assert.deepEqual(result, { taskId: "42", project: "MyProj", sectionMode: "sections" });
-	const params = JSON.parse(records[0].args[3]);
-	assert.equal(params.section_id, "Frame", "task is created in the Frame section");
+	const result = await setupTodoistStart(ctx, enabledCfg, fakePushExec(records), "Feature X");
+	assert.deepEqual(result, { taskId: "42", project: "10", sectionMode: "sections" }, "stores the picked project's ID, not its display name");
+	assert.ok(selectCalls.some((c) => c.options.includes("MyProj")), "the human picks from the list of existing projects");
+	const create = records.find((r) => r.args[1] === "TODOIST_CREATE_TASK");
+	const params = JSON.parse(create.args[3]);
+	assert.equal(params.project_id, "10", "create uses the project ID");
+	assert.equal(params.section_id, "500", "Frame section name resolved to its id");
 	resetTodoist();
 });
 
-test("a blank project prompt returns null and makes no composio call", async () => {
+test("no existing projects returns null (nothing to pick) and makes no create call", async () => {
 	resetTodoist();
 	const records = [];
-	const ctx = fakeCtx({ input: async () => "  " });
-	const result = await setupTodoistStart(ctx, enabledCfg, fakeExec(records), "Feature X");
+	const ctx = pushCtx();
+	const result = await setupTodoistStart(ctx, enabledCfg, fakePushExec(records, { projects: [] }), "Feature X");
 	assert.equal(result, null);
-	assert.equal(records.length, 0);
+	assert.ok(!records.some((r) => r.args[1] === "TODOIST_CREATE_TASK"));
 	resetTodoist();
 });
 
-test("an undefined project prompt (dismissed dialog) returns null and makes no composio call", async () => {
+test("a dismissed project picker returns null and makes no create call", async () => {
 	resetTodoist();
 	const records = [];
-	const ctx = fakeCtx({ input: async () => undefined });
-	const result = await setupTodoistStart(ctx, enabledCfg, fakeExec(records), "Feature X");
+	const ctx = pushCtx({ select: async (title, options) => (options.includes("Create a new Todoist task") ? "Create a new Todoist task" : undefined) });
+	const result = await setupTodoistStart(ctx, enabledCfg, fakePushExec(records), "Feature X");
 	assert.equal(result, null);
-	assert.equal(records.length, 0);
+	assert.ok(!records.some((r) => r.args[1] === "TODOIST_CREATE_TASK"));
 	resetTodoist();
 });
 
 test("a composio create failure (nonzero exit) makes setupTodoistStart return null (fail-soft)", async () => {
 	resetTodoist();
 	const records = [];
-	const ctx = fakeCtx();
-	const exec = fakeExec(records, () => ({ code: 1, stdout: "", stderr: "not linked" }));
-	const result = await setupTodoistStart(ctx, enabledCfg, exec, "Feature X");
+	const ctx = pushCtx();
+	const result = await setupTodoistStart(ctx, enabledCfg, fakePushExec(records, { createCode: 1 }), "Feature X");
 	assert.equal(result, null);
 	resetTodoist();
 });

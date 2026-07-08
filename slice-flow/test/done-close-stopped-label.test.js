@@ -17,11 +17,19 @@ const cfgAuto = (gateName) => ({
 	autonomy: { ...DEFAULT_CONFIG.autonomy, [gateName]: "auto" },
 });
 
-/** Records every exec invocation; returns canned success output. */
+const BOARD_WITH_IDS = ["Frame", "Architect", "Plan", "Build", "Review", "Simplify", "Ship"].map((name) => ({ id: `sec-${name}`, name }));
+
+/** Records every exec invocation; answers TODOIST_LIST_SECTIONS (section id
+ * resolution for moves) and defaults everything else to canned success. */
 function fakeExec(records, handler) {
 	return async (cmd, args, opts) => {
 		records.push({ cmd, args, opts });
-		return handler ? handler(cmd, args, opts) : { code: 0, stdout: "{}", stderr: "" };
+		if (handler) {
+			const r = handler(cmd, args, opts);
+			if (r) return r;
+		}
+		if (args[1] === "TODOIST_LIST_SECTIONS") return { code: 0, stdout: JSON.stringify({ data: { results: BOARD_WITH_IDS } }), stderr: "" };
+		return { code: 0, stdout: "{}", stderr: "" };
 	};
 }
 
@@ -54,12 +62,14 @@ test("a clean verification pass enqueues a move to Ship then a close, in order",
 	assert.match(out, /COMPLETE/);
 
 	await getTodoist(cfg).flush();
-	assert.equal(records.length, 3, "move + comment + close");
-	assert.equal(records[0].args[1], "TODOIST_MOVE_TASK");
-	assert.equal(records[1].args[1], "TODOIST_CREATE_COMMENT_V1");
-	assert.equal(records[2].args[1], "TODOIST_CLOSE_TASK_V1");
-	const closeParams = JSON.parse(records[2].args[3]);
-	assert.equal(closeParams.task_id, "t1");
+	const move = records.find((r) => r.args[1] === "TODOIST_MOVE_TASK");
+	const comment = records.find((r) => r.args[1] === "TODOIST_CREATE_COMMENT_V1");
+	const close = records.find((r) => r.args[1] === "TODOIST_CLOSE_TASK_V1");
+	assert.ok(move && comment && close, "move + comment + close all issued");
+	assert.equal(JSON.parse(move.args[3]).section_id, "sec-Ship", "moved to the resolved Ship section id");
+	// The move is enqueued before the close, so it drains first.
+	assert.ok(records.indexOf(move) < records.indexOf(close), "the move precedes the close");
+	assert.equal(JSON.parse(close.args[3]).task_id, "t1");
 });
 
 test("reaching done with no state.todoist enqueues nothing", async () => {
@@ -95,15 +105,54 @@ test("stopped enqueues a stopped label and a comment with the reason, but no mov
 	assert.equal(state.phase, "stopped");
 
 	await getTodoist(cfg).flush();
-	assert.equal(records.length, 2, "label + comment, no move");
-	assert.equal(records[0].args[1], "TODOIST_UPDATE_TASK");
-	const labelParams = JSON.parse(records[0].args[3]);
+	assert.ok(!records.some((r) => r.args[1] === "TODOIST_MOVE_TASK"), "no move when stopping");
+	const update = records.find((r) => r.args[1] === "TODOIST_UPDATE_TASK");
+	assert.ok(update, "the stopped label is applied via an update");
+	const labelParams = JSON.parse(update.args[3]);
 	assert.equal(labelParams.task_id, "t1");
-	assert.deepEqual(labelParams.labels, ["stopped"]);
-	assert.equal(records[1].args[1], "TODOIST_CREATE_COMMENT_V1");
-	const commentParams = JSON.parse(records[1].args[3]);
-	assert.equal(commentParams.task_id, "t1");
-	assert.match(commentParams.content, /^Stopped: user aborted at verify completion gate$/);
+	assert.deepEqual(labelParams.labels, ["stopped"], "applies stopped when the task had no labels");
+	const comment = records.find((r) => r.args[1] === "TODOIST_CREATE_COMMENT_V1");
+	assert.ok(comment, "a comment with the reason is added");
+	assert.match(JSON.parse(comment.args[3]).content, /^Stopped: user aborted at verify completion gate$/);
+});
+
+test("stopped appends the stopped label WITHOUT clobbering existing labels and ensures the label exists", async () => {
+	const records = [];
+	const { p, state } = setup("stopped-append-label");
+	state.phase = "verify";
+	state.todoist = { taskId: "t1", project: "P", sectionMode: "sections" };
+	const cfg = { ...DEFAULT_CONFIG, todoist: { enabled: true } };
+	getTodoist(
+		cfg,
+		fakeExec(records, (cmd, args) => (args[1] === "TODOIST_GET_TASK2" ? { code: 0, stdout: JSON.stringify({ data: { labels: ["urgent", "client"] } }), stderr: "" } : null)),
+	);
+
+	stopped(p, state, "user aborted", cfg);
+	await getTodoist(cfg).flush();
+
+	assert.ok(
+		records.some((r) => r.args[1] === "TODOIST_CREATE_LABEL_V1" && JSON.parse(r.args[3]).name === "stopped"),
+		"ensures the stopped label exists before applying it (Todoist ignores unknown label names)",
+	);
+	const update = records.find((r) => r.args[1] === "TODOIST_UPDATE_TASK");
+	assert.deepEqual(JSON.parse(update.args[3]).labels, ["urgent", "client", "stopped"], "existing labels are preserved, not replaced");
+});
+
+test("stopped does not re-apply the label when the task already carries it", async () => {
+	const records = [];
+	const { p, state } = setup("stopped-already-labeled");
+	state.phase = "verify";
+	state.todoist = { taskId: "t1", project: "P", sectionMode: "sections" };
+	const cfg = { ...DEFAULT_CONFIG, todoist: { enabled: true } };
+	getTodoist(
+		cfg,
+		fakeExec(records, (cmd, args) => (args[1] === "TODOIST_GET_TASK2" ? { code: 0, stdout: JSON.stringify({ data: { labels: ["stopped"] } }), stderr: "" } : null)),
+	);
+
+	stopped(p, state, "user aborted", cfg);
+	await getTodoist(cfg).flush();
+
+	assert.ok(!records.some((r) => r.args[1] === "TODOIST_UPDATE_TASK"), "no redundant label update when stopped is already present");
 });
 
 test("stopped with no state.todoist enqueues nothing", async () => {
