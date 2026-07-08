@@ -130,6 +130,20 @@ test("the abort action now flushes the todoist client before returning", () => {
 	assert.match(body, /await getTodoist\(cfg, \(c, a, o\) => pi\.exec\(c, a, o\)\)\.flush\(\);/, "abort branch must flush the todoist client");
 });
 
+test("the abort action primes the exec-backed todoist client BEFORE calling stopped()", () => {
+	// stopped() memoizes getTodoist(cfg) internally with no exec; if the abort
+	// branch does not prime the singleton with exec first, a fresh process
+	// memoizes a NOOP and the stopped label/comment are silently discarded.
+	const start = sliceFlowText.indexOf('case "abort":');
+	const end = sliceFlowText.indexOf('case "next":');
+	const body = sliceFlowText.slice(start, end);
+	const primeIdx = body.search(/getTodoist\(cfg, \(c, a, o\) => pi\.exec\(c, a, o\)\)/);
+	const stoppedIdx = body.indexOf("stopped(p, state");
+	assert.ok(primeIdx !== -1, "abort branch must prime getTodoist(cfg, exec)");
+	assert.ok(stoppedIdx !== -1, "abort branch must call stopped()");
+	assert.ok(primeIdx < stoppedIdx, "the exec-backed prime must precede stopped() so its board updates ship");
+});
+
 test("slice-flow.ts imports getTodoist", () => {
 	assert.match(sliceFlowText, /import \{ getTodoist \} from "\.\/lib\/todoist\.ts";/);
 });
