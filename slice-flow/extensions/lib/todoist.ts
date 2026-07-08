@@ -5,18 +5,34 @@
  * flag, a missing `exec`, or a dead/failing CLI degrades to `null`/no-op and
  * never throws into the workflow.
  *
- * Push MVP (slice 001): only task creation. The buffer/flush/move/comment/
- * attach/close/label enqueue methods arrive in later slices.
+ * Slice 001: task creation. Slice 003 (this slice): a buffered, fail-soft
+ * `move`/`comment` transport — synchronous enqueue methods append to an
+ * in-memory buffer; `flush()` drains it over the Composio CLI in order,
+ * catching every error. Nothing is enqueued yet (callers arrive in slices
+ * 004-006); `attach`/`close`/`label` also arrive later.
  */
 
 import type { SliceFlowConfig } from "./config.ts";
 import type { Exec } from "./worktree.ts";
 
+/** A buffered board-sync operation: the Composio tool slug plus its params,
+ * queued by a synchronous enqueue method and shipped in order by `flush()`. */
+export interface Op {
+	tool: string;
+	params: Record<string, unknown>;
+}
+
 export interface Todoist {
 	readonly enabled: boolean;
 	createTask(a: { project: string; section?: string; content: string }): Promise<string | null>;
-	/** Real buffer/flush arrives in slice 003; for now this slice has nothing
-	 * to enqueue, so flush is a no-op. */
+	/** Synchronous, fail-soft enqueue: appends to the in-memory op buffer. Never
+	 * throws (a full/misbehaving buffer is swallowed, mirroring every other
+	 * method on this client). Nothing is enqueued by this slice's callers yet. */
+	move(taskId: string, project: string, section: string): void;
+	/** Synchronous, fail-soft enqueue: see `move`. */
+	comment(taskId: string, text: string): void;
+	/** Drains the op buffer over the Composio CLI, in insertion order, catching
+	 * every per-op error. Always resolves, even when every op throws. */
 	flush(): Promise<void>;
 }
 
@@ -25,6 +41,8 @@ export const NOOP: Todoist = {
 	async createTask() {
 		return null;
 	},
+	move() {},
+	comment() {},
 	async flush() {},
 };
 
@@ -58,6 +76,12 @@ function parseTaskId(stdout: string): string | null {
 export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boolean }): Todoist {
 	if (!opts.enabled || !opts.exec) return NOOP;
 	const exec = opts.exec;
+	const buffer: Op[] = [];
+	const enqueue = (tool: string, params: Record<string, unknown>) => {
+		try {
+			buffer.push({ tool, params });
+		} catch {}
+	};
 	return {
 		enabled: true,
 		async createTask(a) {
@@ -75,7 +99,30 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 				return null;
 			}
 		},
-		async flush() {},
+		// Confirmed against the installed Composio CLI (search + tools info):
+		// TODOIST_MOVE_TASK takes task_id plus exactly one of project_id/
+		// section_id/parent_id. This slice's contract fixes the move(taskId,
+		// project, section) signature; passing both project_id and section_id
+		// together will be rejected by a live Composio call (fails soft, caught
+		// in flush below) — resolving that mutual-exclusivity is out of scope
+		// here since nothing calls move() until slices 004-006 (see memo).
+		move(taskId, project, section) {
+			enqueue("TODOIST_MOVE_TASK", { task_id: taskId, project_id: project, section_id: section });
+		},
+		// Confirmed: TODOIST_CREATE_COMMENT_V1 takes content + task_id.
+		comment(taskId, text) {
+			enqueue("TODOIST_CREATE_COMMENT_V1", { task_id: taskId, content: text });
+		},
+		async flush() {
+			const ops = buffer.splice(0, buffer.length);
+			for (const op of ops) {
+				try {
+					await composioExec(exec, op.tool, op.params);
+				} catch (e) {
+					if (opts.debug) console.error("[slice-flow todoist] op failed:", e);
+				}
+			}
+		},
 	};
 }
 

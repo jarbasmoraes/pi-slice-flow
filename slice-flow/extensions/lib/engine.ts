@@ -1194,6 +1194,7 @@ export function startWorkflow(
 }
 
 export async function nextStep(ctx: GateContext, p: Paths, cfg: SliceFlowConfig, state: State, exec?: Exec): Promise<string> {
+	getTodoist(cfg, exec);
 	if (state.phase === "done") return `Workflow already complete. Final docs are under ${p.root}/.`;
 	if (state.phase === "stopped") return `Workflow is stopped. Start fresh with /feature after clearing ${p.root}, or inspect ${p.report}.`;
 	const pending = state.pending;
