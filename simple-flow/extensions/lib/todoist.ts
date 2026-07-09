@@ -1,0 +1,83 @@
+/**
+ * A thin, fail-loud, fully-awaited, unbuffered client over the Composio CLI
+ * (`composio execute TODOIST_*`). Unlike slice-flow's fail-soft todoist.ts,
+ * every method here THROWS on any CLI/nonzero failure — simple-flow is a
+ * conversational, explicit-command tool, so a failed Todoist call must be a
+ * loud error the user sees immediately, never a silent no-op. Declares its
+ * OWN `Exec` type; does not import anything from slice-flow.
+ *
+ * Slice 001: `listProjects` + `createTask` only. The id-parse -> find-by-
+ * content recovery fallback (for a create whose id could not be parsed) is
+ * slice 003 — here that case reports null (create succeeded, id unparseable)
+ * without throwing, per the slice contract.
+ */
+
+export type Exec = (cmd: string, args: string[], opts?: { timeout?: number; cwd?: string }) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+export interface Todoist {
+	listProjects(): Promise<Array<{ id: string; name: string }>>;
+	createTask(a: { project: string; content: string }): Promise<string | null>;
+}
+
+/** Run one `composio execute` call. Throws (naming the Composio CLI) when
+ * `exec` itself throws, or when the CLI exits nonzero — the fail-loud
+ * counterpart of slice-flow's composioExec, which fails soft instead. */
+async function composioExec(exec: Exec, tool: string, params: Record<string, unknown>): Promise<string> {
+	let res;
+	try {
+		res = await exec("composio", ["execute", tool, "-d", JSON.stringify(params)], { timeout: 5000 });
+	} catch (e) {
+		throw new Error(`simple-flow: could not run the Composio CLI (${tool}). Is 'composio' installed and on PATH? ${e instanceof Error ? e.message : String(e)}`);
+	}
+	if (res.code !== 0) throw new Error(`simple-flow: Composio call ${tool} failed (exit ${res.code}). ${res.stderr.trim() || res.stdout.trim() || "check that the Composio CLI is authed."}`);
+	return res.stdout;
+}
+
+/** Best-effort extraction of `{ id, name }` pairs from a list response
+ * (TODOIST_GET_ALL_PROJECTS). Copied verbatim from slice-flow's todoist.ts:
+ * both the envelope (results/projects) and the id field (id/project_id) are
+ * probed; entries missing an id or name are dropped rather than guessed at. */
+function parseNamedList(stdout: string): Array<{ id: string; name: string }> {
+	type Entry = { id?: unknown; project_id?: unknown; name?: unknown };
+	try {
+		const parsed = JSON.parse(stdout) as { data?: { results?: Entry[]; projects?: Entry[] } | Entry[] };
+		const raw = parsed?.data;
+		const list: Entry[] = Array.isArray(raw) ? raw : (raw?.results ?? raw?.projects ?? []);
+		return list
+			.map((x) => ({ id: x?.id ?? x?.project_id, name: x?.name }))
+			.filter((x): x is { id: unknown; name: string } => typeof x.name === "string" && x.name.length > 0 && x.id !== undefined && x.id !== null)
+			.map((x) => ({ id: String(x.id), name: x.name }));
+	} catch {
+		return [];
+	}
+}
+
+/** Best-effort extraction of the created task id from a `composio execute`
+ * JSON response. Copied verbatim from slice-flow's todoist.ts. Returns null
+ * (not a throw) when the create succeeded (exit 0) but the id could not be
+ * parsed — the create itself was not a failure. */
+function parseTaskId(stdout: string): string | null {
+	try {
+		const parsed = JSON.parse(stdout) as { data?: { id?: unknown; task?: { id?: unknown } }; id?: unknown };
+		const id = parsed?.data?.id ?? parsed?.data?.task?.id ?? parsed?.id;
+		return id === undefined || id === null ? null : String(id);
+	} catch {
+		return null;
+	}
+}
+
+/** Build a fail-loud Todoist client. Every method awaits its Composio call
+ * inline (no buffer, no `flush`) and throws on any CLI/nonzero failure. */
+export function createClient(opts: { exec: Exec; debug?: boolean }): Todoist {
+	const { exec } = opts;
+	return {
+		async listProjects() {
+			const stdout = await composioExec(exec, "TODOIST_GET_ALL_PROJECTS", {});
+			return parseNamedList(stdout);
+		},
+		async createTask(a) {
+			const stdout = await composioExec(exec, "TODOIST_CREATE_TASK", { content: a.content, project_id: a.project });
+			return parseTaskId(stdout);
+		},
+	};
+}
