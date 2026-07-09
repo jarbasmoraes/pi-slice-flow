@@ -26,8 +26,12 @@ export interface Todoist {
 }
 
 /** Run one `composio execute` call. Throws (naming the Composio CLI) when
- * `exec` itself throws, or when the CLI exits nonzero — the fail-loud
- * counterpart of slice-flow's composioExec, which fails soft instead. */
+ * `exec` itself throws, when the CLI exits nonzero, OR when the CLI exits 0
+ * but its response body reports `"successful": false` — the Composio CLI
+ * wraps Todoist API-level rejections (bad args, auth, a deleted task) into an
+ * exit-0 body, so gating on exit code alone would report a rejected write as
+ * success. This is the fail-loud counterpart of slice-flow's composioExec,
+ * which fails soft instead. */
 async function composioExec(exec: Exec, tool: string, params: Record<string, unknown>): Promise<string> {
 	let res;
 	try {
@@ -36,6 +40,19 @@ async function composioExec(exec: Exec, tool: string, params: Record<string, unk
 		throw new Error(`simple-flow: could not run the Composio CLI (${tool}). Is 'composio' installed and on PATH? ${e instanceof Error ? e.message : String(e)}`);
 	}
 	if (res.code !== 0) throw new Error(`simple-flow: Composio call ${tool} failed (exit ${res.code}). ${res.stderr.trim() || res.stdout.trim() || "check that the Composio CLI is authed."}`);
+	// Exit 0 does not mean the write succeeded: a `"successful": false` body is a
+	// Todoist-side rejection. Fail loud on it; leave an unparseable success body
+	// (JSON.parse throws) to the best-effort parsers below.
+	let body: { successful?: unknown; error?: unknown } | undefined;
+	try {
+		body = JSON.parse(res.stdout) as { successful?: unknown; error?: unknown };
+	} catch {
+		body = undefined;
+	}
+	if (body && typeof body === "object" && body.successful === false) {
+		const detail = (typeof body.error === "string" && body.error.trim()) || res.stderr.trim() || res.stdout.trim() || "check that the Composio CLI is authed.";
+		throw new Error(`simple-flow: Composio call ${tool} failed (Todoist rejected the request). ${detail}`);
+	}
 	return res.stdout;
 }
 

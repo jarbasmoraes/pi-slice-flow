@@ -82,6 +82,25 @@ test("listProjects throws (fail-loud) when exec returns a nonzero exit", async (
   await assert.rejects(() => client.listProjects(), /Composio/);
 });
 
+test("every method fails loud when the CLI exits 0 but the body reports successful:false (Todoist rejected the write)", async () => {
+  const rejected = { code: 0, stdout: JSON.stringify({ successful: false, data: { status_code: 400 }, error: "Invalid argument value" }), stderr: "" };
+  const client = createClient({ exec: async () => rejected });
+  await assert.rejects(() => client.createTask({ project: "p1", content: "c" }), /Composio/);
+  await assert.rejects(() => client.comment("555", "text"), /Composio/);
+  await assert.rejects(() => client.close("555"), /Composio/);
+  await assert.rejects(() => client.update("555", { priority: 4 }), /Composio/);
+  await assert.rejects(() => client.listProjects(), /Composio/);
+  await assert.rejects(() => client.findTask("whatever"), /Composio/);
+  await assert.rejects(() => client.listTasks("Work"), /Composio/);
+});
+
+test("a successful:true body (or one omitting the field) is treated as success, not a failure", async () => {
+  const withFlag = createClient({ exec: async () => ({ code: 0, stdout: JSON.stringify({ successful: true, data: { id: "42" } }), stderr: "" }) });
+  assert.equal(await withFlag.createTask({ project: "p1", content: "c" }), "42");
+  const noFlag = createClient({ exec: async () => ({ code: 0, stdout: JSON.stringify({ data: { id: "43" } }), stderr: "" }) });
+  assert.equal(await noFlag.createTask({ project: "p1", content: "c" }), "43");
+});
+
 test("findTask issues composio execute TODOIST_FILTER_TASKS with a free-text search query and parses the found task", async () => {
   const records = [];
   const client = createClient({
