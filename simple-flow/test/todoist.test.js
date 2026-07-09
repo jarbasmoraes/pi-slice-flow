@@ -81,3 +81,45 @@ test("listProjects throws (fail-loud) when exec returns a nonzero exit", async (
   });
   await assert.rejects(() => client.listProjects(), /Composio/);
 });
+
+test("findTask issues composio execute TODOIST_FILTER_TASKS with a free-text search query and parses the found task", async () => {
+  const records = [];
+  const client = createClient({
+    exec: fakeExec(records, () => ({
+      code: 0,
+      stdout: JSON.stringify({ data: { results: [{ id: "321", project_id: "p2" }] } }),
+      stderr: "",
+    })),
+  });
+  const found = await client.findTask("fix the flaky login test");
+  assert.deepEqual(found, { taskId: "321", project: "p2" });
+  assert.equal(records[0].cmd, "composio");
+  assert.equal(records[0].args[0], "execute");
+  assert.equal(records[0].args[1], "TODOIST_FILTER_TASKS");
+  const params = JSON.parse(records[0].args[3]);
+  assert.equal(params.query, "search: fix the flaky login test");
+});
+
+test("findTask returns null when nothing matched or the envelope was unparseable", async () => {
+  const client = createClient({
+    exec: async () => ({ code: 0, stdout: "not json", stderr: "" }),
+  });
+  const found = await client.findTask("whatever");
+  assert.equal(found, null);
+});
+
+test("findTask throws (fail-loud) when exec throws, naming the Composio CLI", async () => {
+  const client = createClient({
+    exec: async () => {
+      throw new Error("spawn ENOENT");
+    },
+  });
+  await assert.rejects(() => client.findTask("whatever"), /Composio/);
+});
+
+test("findTask throws (fail-loud) when exec returns a nonzero exit", async () => {
+  const client = createClient({
+    exec: async () => ({ code: 1, stdout: "", stderr: "not authed" }),
+  });
+  await assert.rejects(() => client.findTask("whatever"), /Composio/);
+});

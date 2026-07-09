@@ -132,6 +132,90 @@ test("enabled config: a create failure (nonzero exit) is reported and nothing is
   }
 });
 
+test("enabled config: an unparseable create id is recovered via findTask and persisted", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      if (args[1] === "TODOIST_GET_ALL_PROJECTS") {
+        return { code: 0, stdout: JSON.stringify({ data: { projects: [{ project_id: "p1", name: "Inbox" }] } }), stderr: "" };
+      }
+      if (args[1] === "TODOIST_CREATE_TASK") {
+        return { code: 0, stdout: "not json", stderr: "" };
+      }
+      if (args[1] === "TODOIST_FILTER_TASKS") {
+        return { code: 0, stdout: JSON.stringify({ data: { results: [{ id: "888", project_id: "p1" }] } }), stderr: "" };
+      }
+      throw new Error(`unexpected tool ${args[1]}`);
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd, { select: "Inbox" });
+    await pi.commands["simple-task"].handler("fix the flaky login test", ctx);
+
+    const search = records.find((r) => r.args[1] === "TODOIST_FILTER_TASKS");
+    assert.ok(search, "recovers via findTask when the create id is unparseable");
+    const params = JSON.parse(search.args[3]);
+    assert.equal(params.query, "search: fix the flaky login test");
+
+    assert.deepEqual(load(cwd), { taskId: "888", project: "Inbox", content: "fix the flaky login test" });
+    assert.ok(ctx.notifications.some((n) => n.level === "info" && /888/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("enabled config: unparseable create id AND findTask returning null reports an error and persists nothing", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const pi = fakePi(async (cmd, args) => {
+      if (args[1] === "TODOIST_GET_ALL_PROJECTS") {
+        return { code: 0, stdout: JSON.stringify({ data: { projects: [{ project_id: "p1", name: "Inbox" }] } }), stderr: "" };
+      }
+      if (args[1] === "TODOIST_CREATE_TASK") {
+        return { code: 0, stdout: "not json", stderr: "" };
+      }
+      if (args[1] === "TODOIST_FILTER_TASKS") {
+        return { code: 0, stdout: "not json", stderr: "" };
+      }
+      throw new Error(`unexpected tool ${args[1]}`);
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd, { select: "Inbox" });
+    await pi.commands["simple-task"].handler("do a thing", ctx);
+
+    assert.equal(load(cwd), null, "never a half-tracked task");
+    assert.ok(ctx.notifications.some((n) => n.level === "error" && /could not be determined/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("enabled config: happy path (id parses directly) never calls findTask", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      if (args[1] === "TODOIST_GET_ALL_PROJECTS") {
+        return { code: 0, stdout: JSON.stringify({ data: { projects: [{ project_id: "p1", name: "Inbox" }] } }), stderr: "" };
+      }
+      return { code: 0, stdout: JSON.stringify({ data: { id: "555" } }), stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd, { select: "Inbox" });
+    await pi.commands["simple-task"].handler("fix the flaky login test", ctx);
+
+    assert.ok(!records.some((r) => r.args[1] === "TODOIST_FILTER_TASKS"), "happy path never calls findTask");
+    assert.deepEqual(load(cwd), { taskId: "555", project: "Inbox", content: "fix the flaky login test" });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("registers /simple-status without error", () => {
   const pi = fakePi(async () => ({ code: 0, stdout: "{}", stderr: "" }));
   assert.doesNotThrow(() => simpleFlow(pi));

@@ -6,10 +6,9 @@
  * loud error the user sees immediately, never a silent no-op. Declares its
  * OWN `Exec` type; does not import anything from slice-flow.
  *
- * Slice 001: `listProjects` + `createTask` only. The id-parse -> find-by-
- * content recovery fallback (for a create whose id could not be parsed) is
- * slice 003 — here that case reports null (create succeeded, id unparseable)
- * without throwing, per the slice contract.
+ * Slice 001: `listProjects` + `createTask`. Slice 003 adds `findTask`, the
+ * find-by-content recovery fallback used by the /simple-task handler when
+ * the create response's id could not be parsed.
  */
 
 export type Exec = (cmd: string, args: string[], opts?: { timeout?: number; cwd?: string }) => Promise<{ code: number; stdout: string; stderr: string }>;
@@ -17,6 +16,7 @@ export type Exec = (cmd: string, args: string[], opts?: { timeout?: number; cwd?
 export interface Todoist {
 	listProjects(): Promise<Array<{ id: string; name: string }>>;
 	createTask(a: { project: string; content: string }): Promise<string | null>;
+	findTask(content: string): Promise<{ taskId: string; project: string } | null>;
 }
 
 /** Run one `composio execute` call. Throws (naming the Composio CLI) when
@@ -66,6 +66,26 @@ function parseTaskId(stdout: string): string | null {
 	}
 }
 
+/** Best-effort extraction of a `{ taskId, project }` pair from a
+ * TODOIST_FILTER_TASKS response. Copied verbatim from slice-flow's
+ * todoist.ts: the list may sit under data.results or data.tasks; requires
+ * both an id and a project_id, returning null otherwise rather than guessing
+ * further (the success envelope is unconfirmed against a live account). */
+function parseFoundTask(stdout: string): { taskId: string; project: string } | null {
+	try {
+		const parsed = JSON.parse(stdout) as {
+			data?: { id?: unknown; project_id?: unknown; task?: { id?: unknown; project_id?: unknown }; results?: Array<{ id?: unknown; project_id?: unknown }>; tasks?: Array<{ id?: unknown; project_id?: unknown }> };
+		};
+		const task = parsed?.data?.task ?? parsed?.data?.results?.[0] ?? parsed?.data?.tasks?.[0] ?? parsed?.data;
+		const id = task?.id;
+		const project = task?.project_id;
+		if (id === undefined || id === null || project === undefined || project === null) return null;
+		return { taskId: String(id), project: String(project) };
+	} catch {
+		return null;
+	}
+}
+
 /** Build a fail-loud Todoist client. Every method awaits its Composio call
  * inline (no buffer, no `flush`) and throws on any CLI/nonzero failure. */
 export function createClient(opts: { exec: Exec; debug?: boolean }): Todoist {
@@ -78,6 +98,10 @@ export function createClient(opts: { exec: Exec; debug?: boolean }): Todoist {
 		async createTask(a) {
 			const stdout = await composioExec(exec, "TODOIST_CREATE_TASK", { content: a.content, project_id: a.project });
 			return parseTaskId(stdout);
+		},
+		async findTask(content) {
+			const stdout = await composioExec(exec, "TODOIST_FILTER_TASKS", { query: `search: ${content}` });
+			return parseFoundTask(stdout);
 		},
 	};
 }

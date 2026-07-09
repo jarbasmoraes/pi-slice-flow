@@ -43,9 +43,13 @@ export default function (pi: ExtensionAPI) {
 				);
 				if (picked === undefined) return;
 				const chosen = projects.find((p) => p.name === picked)!;
-				const taskId = await client.createTask({ project: chosen.id, content });
+				let taskId = await client.createTask({ project: chosen.id, content });
 				if (taskId === null) {
-					ctx.ui.notify("simple-flow: task created but its id could not be parsed; not tracking it.", "error");
+					const found = await client.findTask(content);
+					taskId = found?.taskId ?? null;
+				}
+				if (taskId === null) {
+					ctx.ui.notify("simple-flow: task was created but its id could not be determined; not tracking it. Check Todoist.", "error");
 					return;
 				}
 				state.save(ctx.cwd, { taskId, project: chosen.name, content });
