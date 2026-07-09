@@ -55,4 +55,21 @@ export default function (pi: ExtensionAPI) {
 			}
 		},
 	});
+
+	pi.registerCommand("simple-status", {
+		description: "Show the currently tracked Todoist task",
+		handler: async (args, ctx) => {
+			const cfg = loadConfig(ctx.cwd);
+			if (!cfg.enabled) {
+				ctx.ui.notify("simple-flow is disabled; enable it in simple-flow.json.", "warning");
+				return;
+			}
+			const tracked = state.load(ctx.cwd);
+			if (!tracked) {
+				ctx.ui.notify("No tracked task. Run /simple-task or /simple-resume first.", "info");
+				return;
+			}
+			ctx.ui.notify(`Tracking Todoist task ${tracked.taskId} in project "${tracked.project}": ${tracked.content}`, "info");
+		},
+	});
 }

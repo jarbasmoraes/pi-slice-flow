@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import simpleFlow from "../extensions/simple-flow.ts";
-import { load } from "../extensions/lib/state.ts";
+import { load, save } from "../extensions/lib/state.ts";
 
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), "simple-flow-ext-"));
@@ -127,6 +127,99 @@ test("enabled config: a create failure (nonzero exit) is reported and nothing is
     await pi.commands["simple-task"].handler("do a thing", ctx);
     assert.equal(load(cwd), null, "nothing tracked on a failed create");
     assert.ok(ctx.notifications.some((n) => n.level === "error"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("registers /simple-status without error", () => {
+  const pi = fakePi(async () => ({ code: 0, stdout: "{}", stderr: "" }));
+  assert.doesNotThrow(() => simpleFlow(pi));
+  assert.ok(pi.commands["simple-status"], "registers a simple-status command");
+  assert.equal(typeof pi.commands["simple-status"].handler, "function");
+});
+
+test("simple-status: disabled config notifies a warning and makes no CLI call", async () => {
+  const cwd = tmpDir();
+  try {
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-status"].handler("", ctx);
+    assert.equal(records.length, 0, "disabled config must never call the CLI");
+    assert.ok(ctx.notifications.some((n) => n.level === "warning"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-status: no tracked task reports a clear message and makes no Composio call", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-status"].handler("", ctx);
+    assert.equal(records.length, 0, "simple-status must never call the CLI");
+    assert.ok(ctx.notifications.some((n) => n.level === "info" && /No tracked task/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-status: reports the exact tracked task after a save", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "555", project: "Work", content: "fix the flaky login test" });
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-status"].handler("", ctx);
+    assert.equal(records.length, 0, "simple-status must never call the CLI");
+    const n = ctx.notifications.find((n) => n.level === "info");
+    assert.ok(n, "reports an info notification");
+    assert.match(n.msg, /555/);
+    assert.match(n.msg, /Work/);
+    assert.match(n.msg, /fix the flaky login test/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-status: simulates a restart via a fresh state.load and still reports the same task", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "777", project: "Home", content: "buy groceries" });
+
+    // Simulate a restart: no in-memory state carried over, just a fresh
+    // state.load(cwd) reading the same on-disk .simple-flow/state.json.
+    const reloaded = load(cwd);
+    assert.deepEqual(reloaded, { taskId: "777", project: "Home", content: "buy groceries" });
+
+    const pi = fakePi(async () => ({ code: 0, stdout: "{}", stderr: "" }));
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-status"].handler("", ctx);
+    const n = ctx.notifications.find((n) => n.level === "info");
+    assert.ok(n);
+    assert.match(n.msg, /777/);
+    assert.match(n.msg, /Home/);
+    assert.match(n.msg, /buy groceries/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
