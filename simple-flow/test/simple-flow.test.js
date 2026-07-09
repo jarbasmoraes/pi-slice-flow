@@ -308,3 +308,110 @@ test("simple-status: simulates a restart via a fresh state.load and still report
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("registers /simple-comment without error", () => {
+  const pi = fakePi(async () => ({ code: 0, stdout: "{}", stderr: "" }));
+  assert.doesNotThrow(() => simpleFlow(pi));
+  assert.ok(pi.commands["simple-comment"], "registers a simple-comment command");
+  assert.equal(typeof pi.commands["simple-comment"].handler, "function");
+});
+
+test("simple-comment: disabled config notifies a warning and makes no CLI call", async () => {
+  const cwd = tmpDir();
+  try {
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-comment"].handler("saw it fail again on CI", ctx);
+    assert.equal(records.length, 0, "disabled config must never call the CLI");
+    assert.ok(ctx.notifications.some((n) => n.level === "warning"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-comment: enabled config + empty text: usage warning, no CLI call", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-comment"].handler("   ", ctx);
+    assert.equal(records.length, 0);
+    assert.ok(ctx.notifications.some((n) => n.level === "warning" && /Usage/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-comment: no tracked task reports a clear message and makes no Composio call", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-comment"].handler("saw it fail again on CI", ctx);
+    assert.equal(records.length, 0, "no tracked task must never call the CLI");
+    assert.ok(ctx.notifications.some((n) => n.level === "warning" && /No tracked task/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-comment: with a tracked task, issues TODOIST_CREATE_COMMENT_V1 with the exact text and reports success", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "555", project: "Work", content: "fix the flaky login test" });
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-comment"].handler("saw it fail again on CI", ctx);
+
+    assert.equal(records.length, 1, "issues exactly one Composio call");
+    assert.equal(records[0].cmd, "composio");
+    assert.equal(records[0].args[0], "execute");
+    assert.equal(records[0].args[1], "TODOIST_CREATE_COMMENT_V1");
+    assert.equal(records[0].args[2], "-d");
+    const params = JSON.parse(records[0].args[3]);
+    assert.deepEqual(params, { task_id: "555", content: "saw it fail again on CI" });
+    assert.ok(ctx.notifications.some((n) => n.level === "info" && /555/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-comment: a Composio failure (nonzero exit) reports a clear error and not success", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "555", project: "Work", content: "fix the flaky login test" });
+    const pi = fakePi(async () => ({ code: 1, stdout: "", stderr: "not authed" }));
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-comment"].handler("saw it fail again on CI", ctx);
+
+    assert.ok(ctx.notifications.some((n) => n.level === "error"), "reports an error notification");
+    assert.ok(!ctx.notifications.some((n) => n.level === "info"), "no success notification on failure");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

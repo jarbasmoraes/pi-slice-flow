@@ -123,3 +123,31 @@ test("findTask throws (fail-loud) when exec returns a nonzero exit", async () =>
   });
   await assert.rejects(() => client.findTask("whatever"), /Composio/);
 });
+
+test("comment issues composio execute TODOIST_CREATE_COMMENT_V1 -d <json> with task_id and content", async () => {
+  const records = [];
+  const client = createClient({ exec: fakeExec(records) });
+  await client.comment("555", "saw it fail again on CI");
+  assert.equal(records[0].cmd, "composio");
+  assert.equal(records[0].args[0], "execute");
+  assert.equal(records[0].args[1], "TODOIST_CREATE_COMMENT_V1");
+  assert.equal(records[0].args[2], "-d");
+  const params = JSON.parse(records[0].args[3]);
+  assert.deepEqual(params, { task_id: "555", content: "saw it fail again on CI" });
+});
+
+test("comment throws (fail-loud) when exec throws, naming the Composio CLI", async () => {
+  const client = createClient({
+    exec: async () => {
+      throw new Error("spawn ENOENT");
+    },
+  });
+  await assert.rejects(() => client.comment("555", "text"), /Composio/);
+});
+
+test("comment throws (fail-loud) when exec returns a nonzero exit", async () => {
+  const client = createClient({
+    exec: async () => ({ code: 1, stdout: "", stderr: "not authed" }),
+  });
+  await assert.rejects(() => client.comment("555", "text"), /Composio/);
+});

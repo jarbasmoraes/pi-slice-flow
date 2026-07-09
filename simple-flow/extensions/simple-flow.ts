@@ -76,4 +76,32 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`Tracking Todoist task ${tracked.taskId} in project "${tracked.project}": ${tracked.content}`, "info");
 		},
 	});
+
+	pi.registerCommand("simple-comment", {
+		description: "Add a comment to the tracked Todoist task (/simple-comment <text>)",
+		handler: async (args, ctx) => {
+			const cfg = loadConfig(ctx.cwd);
+			if (!cfg.enabled) {
+				ctx.ui.notify("simple-flow is disabled; enable it in simple-flow.json.", "warning");
+				return;
+			}
+			const text = args.trim();
+			if (!text) {
+				ctx.ui.notify("Usage: /simple-comment <text>", "warning");
+				return;
+			}
+			const tracked = state.load(ctx.cwd);
+			if (!tracked) {
+				ctx.ui.notify("No tracked task. Run /simple-task or /simple-resume first.", "warning");
+				return;
+			}
+			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o), debug: cfg.debug });
+			try {
+				await client.comment(tracked.taskId, text);
+				ctx.ui.notify(`Added comment to task ${tracked.taskId}.`, "info");
+			} catch (e) {
+				ctx.ui.notify(e instanceof Error ? e.message : String(e), "error");
+			}
+		},
+	});
 }
