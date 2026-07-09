@@ -18,6 +18,7 @@ export interface Todoist {
 	createTask(a: { project: string; content: string }): Promise<string | null>;
 	findTask(content: string): Promise<{ taskId: string; project: string } | null>;
 	comment(taskId: string, text: string): Promise<void>;
+	close(taskId: string): Promise<void>;
 }
 
 /** Run one `composio execute` call. Throws (naming the Composio CLI) when
@@ -106,6 +107,9 @@ export function createClient(opts: { exec: Exec; debug?: boolean }): Todoist {
 		},
 		async comment(taskId, text) {
 			await composioExec(exec, "TODOIST_CREATE_COMMENT_V1", { task_id: taskId, content: text });
+		},
+		async close(taskId) {
+			await composioExec(exec, "TODOIST_CLOSE_TASK_V1", { task_id: taskId });
 		},
 	};
 }

@@ -415,3 +415,107 @@ test("simple-comment: a Composio failure (nonzero exit) reports a clear error an
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("registers /simple-finish without error", () => {
+  const pi = fakePi(async () => ({ code: 0, stdout: "{}", stderr: "" }));
+  assert.doesNotThrow(() => simpleFlow(pi));
+  assert.ok(pi.commands["simple-finish"], "registers a simple-finish command");
+  assert.equal(typeof pi.commands["simple-finish"].handler, "function");
+});
+
+test("simple-finish: disabled config notifies a warning and makes no CLI call", async () => {
+  const cwd = tmpDir();
+  try {
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-finish"].handler("", ctx);
+    assert.equal(records.length, 0, "disabled config must never call the CLI");
+    assert.ok(ctx.notifications.some((n) => n.level === "warning"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-finish: no tracked task reports a clear message and makes no Composio call", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-finish"].handler("", ctx);
+    assert.equal(records.length, 0, "no tracked task must never call the CLI");
+    assert.ok(ctx.notifications.some((n) => n.level === "warning" && /No tracked task/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-finish: with a tracked task, issues TODOIST_CLOSE_TASK_V1 with the exact task_id and reports success", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "555", project: "Work", content: "fix the flaky login test" });
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-finish"].handler("", ctx);
+
+    assert.equal(records.length, 1, "issues exactly one Composio call");
+    assert.equal(records[0].cmd, "composio");
+    assert.equal(records[0].args[0], "execute");
+    assert.equal(records[0].args[1], "TODOIST_CLOSE_TASK_V1");
+    assert.equal(records[0].args[2], "-d");
+    const params = JSON.parse(records[0].args[3]);
+    assert.deepEqual(params, { task_id: "555" });
+    assert.ok(ctx.notifications.some((n) => n.level === "info" && /555/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-finish: a Composio failure (nonzero exit) reports a clear error and not success", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "555", project: "Work", content: "fix the flaky login test" });
+    const pi = fakePi(async () => ({ code: 1, stdout: "", stderr: "not authed" }));
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-finish"].handler("", ctx);
+
+    assert.ok(ctx.notifications.some((n) => n.level === "error"), "reports an error notification");
+    assert.ok(!ctx.notifications.some((n) => n.level === "info"), "no success notification on failure");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-finish: does not clear the tracked-task state after closing", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "555", project: "Work", content: "fix the flaky login test" });
+    const pi = fakePi(async () => ({ code: 0, stdout: "{}", stderr: "" }));
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-finish"].handler("", ctx);
+
+    assert.deepEqual(load(cwd), { taskId: "555", project: "Work", content: "fix the flaky login test" }, "tracked task record is left in place after finish");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

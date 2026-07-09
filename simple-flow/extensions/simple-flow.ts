@@ -104,4 +104,27 @@ export default function (pi: ExtensionAPI) {
 			}
 		},
 	});
+
+	pi.registerCommand("simple-finish", {
+		description: "Close (complete) the tracked Todoist task",
+		handler: async (args, ctx) => {
+			const cfg = loadConfig(ctx.cwd);
+			if (!cfg.enabled) {
+				ctx.ui.notify("simple-flow is disabled; enable it in simple-flow.json.", "warning");
+				return;
+			}
+			const tracked = state.load(ctx.cwd);
+			if (!tracked) {
+				ctx.ui.notify("No tracked task. Run /simple-task or /simple-resume first.", "warning");
+				return;
+			}
+			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o), debug: cfg.debug });
+			try {
+				await client.close(tracked.taskId);
+				ctx.ui.notify(`Closed Todoist task ${tracked.taskId}.`, "info");
+			} catch (e) {
+				ctx.ui.notify(e instanceof Error ? e.message : String(e), "error");
+			}
+		},
+	});
 }

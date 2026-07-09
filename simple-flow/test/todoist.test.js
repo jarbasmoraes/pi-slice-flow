@@ -151,3 +151,31 @@ test("comment throws (fail-loud) when exec returns a nonzero exit", async () => 
   });
   await assert.rejects(() => client.comment("555", "text"), /Composio/);
 });
+
+test("close issues composio execute TODOIST_CLOSE_TASK_V1 -d <json> with task_id", async () => {
+  const records = [];
+  const client = createClient({ exec: fakeExec(records) });
+  await client.close("555");
+  assert.equal(records[0].cmd, "composio");
+  assert.equal(records[0].args[0], "execute");
+  assert.equal(records[0].args[1], "TODOIST_CLOSE_TASK_V1");
+  assert.equal(records[0].args[2], "-d");
+  const params = JSON.parse(records[0].args[3]);
+  assert.deepEqual(params, { task_id: "555" });
+});
+
+test("close throws (fail-loud) when exec throws, naming the Composio CLI", async () => {
+  const client = createClient({
+    exec: async () => {
+      throw new Error("spawn ENOENT");
+    },
+  });
+  await assert.rejects(() => client.close("555"), /Composio/);
+});
+
+test("close throws (fail-loud) when exec returns a nonzero exit", async () => {
+  const client = createClient({
+    exec: async () => ({ code: 1, stdout: "", stderr: "not authed" }),
+  });
+  await assert.rejects(() => client.close("555"), /Composio/);
+});
