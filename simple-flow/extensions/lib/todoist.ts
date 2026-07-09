@@ -19,6 +19,7 @@ export interface Todoist {
 	findTask(content: string): Promise<{ taskId: string; project: string } | null>;
 	comment(taskId: string, text: string): Promise<void>;
 	close(taskId: string): Promise<void>;
+	update(taskId: string, fields: { content?: string; description?: string; due?: string; priority?: number }): Promise<void>;
 }
 
 /** Run one `composio execute` call. Throws (naming the Composio CLI) when
@@ -110,6 +111,15 @@ export function createClient(opts: { exec: Exec; debug?: boolean }): Todoist {
 		},
 		async close(taskId) {
 			await composioExec(exec, "TODOIST_CLOSE_TASK_V1", { task_id: taskId });
+		},
+		async update(taskId, fields) {
+			const params: Record<string, unknown> = { task_id: taskId };
+			if (fields.content !== undefined) params.content = fields.content;
+			if (fields.description !== undefined) params.description = fields.description;
+			if (fields.due !== undefined) params.due_string = fields.due;
+			if (fields.priority !== undefined) params.priority = fields.priority;
+			// Never set params.labels — TODOIST_UPDATE_TASK replaces the whole label list.
+			await composioExec(exec, "TODOIST_UPDATE_TASK", params);
 		},
 	};
 }

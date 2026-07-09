@@ -16,6 +16,43 @@ import { loadConfig } from "./lib/config.ts";
 import * as state from "./lib/state.ts";
 import { createClient } from "./lib/todoist.ts";
 
+const PRIORITY_WORDS: Record<string, number> = { high: 4, medium: 3, low: 2, none: 1 };
+
+/** Maps /simple-update's flags to a fields object with only the flags that
+ * were actually present. Pure and exported so it is testable without a UI.
+ * `--priority` accepts high/medium/low/none (mapped to Todoist's 1-4 scale,
+ * 4 = highest) or a bare integer 1-4; anything else is treated as unset. */
+export function parseUpdateArgs(argsStr: string): { content?: string; description?: string; due?: string; priority?: number } {
+	const tokens = argsStr.trim().length ? argsStr.trim().split(/\s+/) : [];
+	const flagNames = new Set(["--content", "--description", "--due", "--priority"]);
+	const fields: { content?: string; description?: string; due?: string; priority?: number } = {};
+	let i = 0;
+	while (i < tokens.length) {
+		const flag = tokens[i];
+		if (!flagNames.has(flag)) {
+			i++;
+			continue;
+		}
+		i++;
+		const valueTokens: string[] = [];
+		while (i < tokens.length && !flagNames.has(tokens[i])) {
+			valueTokens.push(tokens[i]);
+			i++;
+		}
+		const value = valueTokens.join(" ");
+		if (!value) continue;
+		if (flag === "--priority") {
+			const word = PRIORITY_WORDS[value];
+			const num = Number(value);
+			if (word !== undefined) fields.priority = word;
+			else if (Number.isInteger(num) && num >= 1 && num <= 4) fields.priority = num;
+		} else if (flag === "--content") fields.content = value;
+		else if (flag === "--description") fields.description = value;
+		else if (flag === "--due") fields.due = value;
+	}
+	return fields;
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("simple-task", {
 		description: "Create a Todoist task in a chosen project and track it (/simple-task <prompt>)",
@@ -122,6 +159,34 @@ export default function (pi: ExtensionAPI) {
 			try {
 				await client.close(tracked.taskId);
 				ctx.ui.notify(`Closed Todoist task ${tracked.taskId}.`, "info");
+			} catch (e) {
+				ctx.ui.notify(e instanceof Error ? e.message : String(e), "error");
+			}
+		},
+	});
+
+	pi.registerCommand("simple-update", {
+		description: "Update the tracked task's content/description/due/priority without touching labels (/simple-update --due <text> --priority <high|medium|low|none|1-4>)",
+		handler: async (args, ctx) => {
+			const cfg = loadConfig(ctx.cwd);
+			if (!cfg.enabled) {
+				ctx.ui.notify("simple-flow is disabled; enable it in simple-flow.json.", "warning");
+				return;
+			}
+			const fields = parseUpdateArgs(args);
+			if (Object.keys(fields).length === 0) {
+				ctx.ui.notify("Usage: /simple-update --content <text> --description <text> --due <text> --priority <high|medium|low|none|1-4>", "warning");
+				return;
+			}
+			const tracked = state.load(ctx.cwd);
+			if (!tracked) {
+				ctx.ui.notify("No tracked task. Run /simple-task or /simple-resume first.", "warning");
+				return;
+			}
+			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o), debug: cfg.debug });
+			try {
+				await client.update(tracked.taskId, fields);
+				ctx.ui.notify(`Updated Todoist task ${tracked.taskId}.`, "info");
 			} catch (e) {
 				ctx.ui.notify(e instanceof Error ? e.message : String(e), "error");
 			}

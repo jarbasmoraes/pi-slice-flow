@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import simpleFlow from "../extensions/simple-flow.ts";
+import simpleFlow, { parseUpdateArgs } from "../extensions/simple-flow.ts";
 import { load, save } from "../extensions/lib/state.ts";
 
 function tmpDir() {
@@ -515,6 +515,153 @@ test("simple-finish: does not clear the tracked-task state after closing", async
     await pi.commands["simple-finish"].handler("", ctx);
 
     assert.deepEqual(load(cwd), { taskId: "555", project: "Work", content: "fix the flaky login test" }, "tracked task record is left in place after finish");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("parseUpdateArgs: --priority low alone yields { priority: 2 } and nothing else", () => {
+  assert.deepEqual(parseUpdateArgs("--priority low"), { priority: 2 });
+});
+
+test("parseUpdateArgs: maps high/medium/low/none to Todoist's 1-4 scale", () => {
+  assert.deepEqual(parseUpdateArgs("--priority high"), { priority: 4 });
+  assert.deepEqual(parseUpdateArgs("--priority medium"), { priority: 3 });
+  assert.deepEqual(parseUpdateArgs("--priority low"), { priority: 2 });
+  assert.deepEqual(parseUpdateArgs("--priority none"), { priority: 1 });
+});
+
+test("parseUpdateArgs: a bare integer 1-4 passes through", () => {
+  assert.deepEqual(parseUpdateArgs("--priority 3"), { priority: 3 });
+});
+
+test("parseUpdateArgs: an unrecognized priority is treated as unset", () => {
+  assert.deepEqual(parseUpdateArgs("--priority urgent"), {});
+  assert.deepEqual(parseUpdateArgs("--priority 9"), {});
+});
+
+test("parseUpdateArgs: --due tomorrow --priority high yields both fields, nothing else", () => {
+  assert.deepEqual(parseUpdateArgs("--due tomorrow --priority high"), { due: "tomorrow", priority: 4 });
+});
+
+test("parseUpdateArgs: --content and --description support multi-word values", () => {
+  assert.deepEqual(parseUpdateArgs("--content buy oat milk --description remember the receipt"), {
+    content: "buy oat milk",
+    description: "remember the receipt",
+  });
+});
+
+test("parseUpdateArgs: no recognized flags yields an empty object", () => {
+  assert.deepEqual(parseUpdateArgs(""), {});
+  assert.deepEqual(parseUpdateArgs("nonsense text"), {});
+});
+
+test("registers /simple-update without error", () => {
+  const pi = fakePi(async () => ({ code: 0, stdout: "{}", stderr: "" }));
+  assert.doesNotThrow(() => simpleFlow(pi));
+  assert.ok(pi.commands["simple-update"], "registers a simple-update command");
+  assert.equal(typeof pi.commands["simple-update"].handler, "function");
+});
+
+test("simple-update: disabled config notifies a warning and makes no CLI call", async () => {
+  const cwd = tmpDir();
+  try {
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-update"].handler("--due tomorrow", ctx);
+    assert.equal(records.length, 0, "disabled config must never call the CLI");
+    assert.ok(ctx.notifications.some((n) => n.level === "warning"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-update: no recognized flags reports a usage message and makes no Composio call", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "555", project: "Work", content: "fix the flaky login test" });
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-update"].handler("", ctx);
+    assert.equal(records.length, 0, "no recognized flags must never call the CLI");
+    assert.ok(ctx.notifications.some((n) => n.level === "warning" && /Usage/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-update: no tracked task reports a clear message and makes no Composio call", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-update"].handler("--due tomorrow", ctx);
+    assert.equal(records.length, 0, "no tracked task must never call the CLI");
+    assert.ok(ctx.notifications.some((n) => n.level === "warning" && /No tracked task/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-update: --due tomorrow --priority high sends only due_string and priority, no content/description/labels", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "555", project: "Work", content: "fix the flaky login test" });
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-update"].handler("--due tomorrow --priority high", ctx);
+
+    assert.equal(records.length, 1, "issues exactly one Composio call");
+    assert.equal(records[0].cmd, "composio");
+    assert.equal(records[0].args[0], "execute");
+    assert.equal(records[0].args[1], "TODOIST_UPDATE_TASK");
+    assert.equal(records[0].args[2], "-d");
+    const params = JSON.parse(records[0].args[3]);
+    assert.deepEqual(params, { task_id: "555", due_string: "tomorrow", priority: 4 });
+    assert.ok(!("content" in params), "no content sent");
+    assert.ok(!("description" in params), "no description sent");
+    assert.ok(!("labels" in params), "no labels key ever sent");
+    assert.ok(ctx.notifications.some((n) => n.level === "info" && /555/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-update: a Composio failure (nonzero exit) reports a clear error and not success", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "555", project: "Work", content: "fix the flaky login test" });
+    const pi = fakePi(async () => ({ code: 1, stdout: "", stderr: "not authed" }));
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-update"].handler("--due tomorrow", ctx);
+
+    assert.ok(ctx.notifications.some((n) => n.level === "error"), "reports an error notification");
+    assert.ok(!ctx.notifications.some((n) => n.level === "info"), "no success notification on failure");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

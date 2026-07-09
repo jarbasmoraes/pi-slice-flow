@@ -179,3 +179,50 @@ test("close throws (fail-loud) when exec returns a nonzero exit", async () => {
   });
   await assert.rejects(() => client.close("555"), /Composio/);
 });
+
+test("update issues composio execute TODOIST_UPDATE_TASK -d <json> with only the named fields present", async () => {
+  const records = [];
+  const client = createClient({ exec: fakeExec(records) });
+  await client.update("555", { due: "tomorrow", priority: 4 });
+  assert.equal(records[0].cmd, "composio");
+  assert.equal(records[0].args[0], "execute");
+  assert.equal(records[0].args[1], "TODOIST_UPDATE_TASK");
+  assert.equal(records[0].args[2], "-d");
+  const params = JSON.parse(records[0].args[3]);
+  assert.deepEqual(params, { task_id: "555", due_string: "tomorrow", priority: 4 });
+  assert.ok(!("content" in params), "content is not sent when not provided");
+  assert.ok(!("description" in params), "description is not sent when not provided");
+});
+
+test("update NEVER includes a labels key in the serialized params, for any field combination", async () => {
+  const records = [];
+  const client = createClient({ exec: fakeExec(records) });
+  await client.update("555", { content: "new content", description: "new description", due: "tomorrow", priority: 1 });
+  const params = JSON.parse(records[0].args[3]);
+  assert.ok(!("labels" in params), "labels must never be sent by update");
+  assert.deepEqual(params, { task_id: "555", content: "new content", description: "new description", due_string: "tomorrow", priority: 1 });
+});
+
+test("update omits fields that are not provided", async () => {
+  const records = [];
+  const client = createClient({ exec: fakeExec(records) });
+  await client.update("555", { content: "only this" });
+  const params = JSON.parse(records[0].args[3]);
+  assert.deepEqual(params, { task_id: "555", content: "only this" });
+});
+
+test("update throws (fail-loud) when exec throws, naming the Composio CLI", async () => {
+  const client = createClient({
+    exec: async () => {
+      throw new Error("spawn ENOENT");
+    },
+  });
+  await assert.rejects(() => client.update("555", { due: "tomorrow" }), /Composio/);
+});
+
+test("update throws (fail-loud) when exec returns a nonzero exit", async () => {
+  const client = createClient({
+    exec: async () => ({ code: 1, stdout: "", stderr: "not authed" }),
+  });
+  await assert.rejects(() => client.update("555", { due: "tomorrow" }), /Composio/);
+});
