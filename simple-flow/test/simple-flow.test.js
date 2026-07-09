@@ -23,16 +23,22 @@ function fakePi(execHandler) {
   };
 }
 
-/** A fake ctx: notify records, select returns the configured pick. */
-function fakeCtx(cwd, { select } = {}) {
+/** A fake ctx: notify records, select returns the configured pick(s). A
+ * single `select` value is returned for every ui.select() call (used by
+ * single-pick commands); `selects` is an array consumed in call order (used
+ * by commands like /simple-resume that call ui.select() twice: project then
+ * task). */
+function fakeCtx(cwd, { select, selects } = {}) {
   const notifications = [];
+  const queue = selects ?? (select !== undefined ? [select] : []);
+  let selectCalls = 0;
   return {
     cwd,
     hasUI: true,
     notifications,
     ui: {
       notify: (msg, level) => notifications.push({ msg, level }),
-      select: async () => select,
+      select: async () => queue[selectCalls++],
     },
   };
 }
@@ -662,6 +668,151 @@ test("simple-update: a Composio failure (nonzero exit) reports a clear error and
 
     assert.ok(ctx.notifications.some((n) => n.level === "error"), "reports an error notification");
     assert.ok(!ctx.notifications.some((n) => n.level === "info"), "no success notification on failure");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("registers /simple-resume without error", () => {
+  const pi = fakePi(async () => ({ code: 0, stdout: "{}", stderr: "" }));
+  assert.doesNotThrow(() => simpleFlow(pi));
+  assert.ok(pi.commands["simple-resume"], "registers a simple-resume command");
+  assert.equal(typeof pi.commands["simple-resume"].handler, "function");
+});
+
+test("simple-resume: disabled config notifies a warning and makes no CLI call", async () => {
+  const cwd = tmpDir();
+  try {
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      return { code: 0, stdout: "{}", stderr: "" };
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-resume"].handler("", ctx);
+    assert.equal(records.length, 0, "disabled config must never call the CLI");
+    assert.ok(ctx.notifications.some((n) => n.level === "warning"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-resume: no Todoist projects reports a clear warning and makes no further call", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      if (args[1] === "TODOIST_GET_ALL_PROJECTS") return { code: 0, stdout: JSON.stringify({ data: { projects: [] } }), stderr: "" };
+      throw new Error(`unexpected tool ${args[1]}`);
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-resume"].handler("", ctx);
+    assert.equal(records.length, 1, "only the project list call is made");
+    assert.ok(ctx.notifications.some((n) => n.level === "warning" && /No Todoist projects/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-resume: an empty project reports a clear message and does not overwrite existing state", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "111", project: "Inbox", content: "pre-existing tracked task" });
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      if (args[1] === "TODOIST_GET_ALL_PROJECTS") return { code: 0, stdout: JSON.stringify({ data: { projects: [{ project_id: "p1", name: "Work" }] } }), stderr: "" };
+      if (args[1] === "TODOIST_FILTER_TASKS") return { code: 0, stdout: JSON.stringify({ data: { results: [] } }), stderr: "" };
+      throw new Error(`unexpected tool ${args[1]}`);
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd, { selects: ["Work"] });
+    await pi.commands["simple-resume"].handler("", ctx);
+
+    const filter = records.find((r) => r.args[1] === "TODOIST_FILTER_TASKS");
+    assert.ok(filter, "issued a filter-tasks call");
+    const params = JSON.parse(filter.args[3]);
+    assert.equal(params.query, "#Work");
+
+    assert.ok(ctx.notifications.some((n) => n.level === "warning" && /No active tasks/.test(n.msg)));
+    assert.deepEqual(load(cwd), { taskId: "111", project: "Inbox", content: "pre-existing tracked task" }, "state is not overwritten");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-resume: lists a project's active tasks, and picking one tracks it", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const records = [];
+    const pi = fakePi(async (cmd, args, opts) => {
+      records.push({ cmd, args, opts });
+      if (args[1] === "TODOIST_GET_ALL_PROJECTS") {
+        return { code: 0, stdout: JSON.stringify({ data: { projects: [{ project_id: "p1", name: "Inbox" }, { project_id: "p2", name: "Work" }] } }), stderr: "" };
+      }
+      if (args[1] === "TODOIST_FILTER_TASKS") {
+        return { code: 0, stdout: JSON.stringify({ data: { results: [{ id: "321", content: "fix the flaky login test" }, { id: "322", content: "write docs" }] } }), stderr: "" };
+      }
+      throw new Error(`unexpected tool ${args[1]}`);
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd, { selects: ["Work", "write docs"] });
+    await pi.commands["simple-resume"].handler("", ctx);
+
+    const filter = records.find((r) => r.args[1] === "TODOIST_FILTER_TASKS");
+    assert.ok(filter, "issued a filter-tasks call");
+    const params = JSON.parse(filter.args[3]);
+    assert.equal(params.query, "#Work", "filters by the chosen project's name, not its id");
+
+    assert.deepEqual(load(cwd), { taskId: "322", project: "Work", content: "write docs" });
+    assert.ok(ctx.notifications.some((n) => n.level === "info" && /322/.test(n.msg)));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-resume: picking a different task REPLACES a previously tracked task (single active task)", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    save(cwd, { taskId: "999", project: "Old Project", content: "stale tracked task" });
+    const pi = fakePi(async (cmd, args) => {
+      if (args[1] === "TODOIST_GET_ALL_PROJECTS") {
+        return { code: 0, stdout: JSON.stringify({ data: { projects: [{ project_id: "p1", name: "Work" }] } }), stderr: "" };
+      }
+      if (args[1] === "TODOIST_FILTER_TASKS") {
+        return { code: 0, stdout: JSON.stringify({ data: { results: [{ id: "321", content: "fix the flaky login test" }] } }), stderr: "" };
+      }
+      throw new Error(`unexpected tool ${args[1]}`);
+    });
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd, { selects: ["Work", "fix the flaky login test"] });
+    await pi.commands["simple-resume"].handler("", ctx);
+
+    assert.deepEqual(load(cwd), { taskId: "321", project: "Work", content: "fix the flaky login test" }, "the newly picked task replaces the old one; only one tracked task remains");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("simple-resume: a Composio failure (nonzero exit) reports a clear error and not success", async () => {
+  const cwd = tmpDir();
+  try {
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: true }));
+    const pi = fakePi(async () => ({ code: 1, stdout: "", stderr: "not authed" }));
+    simpleFlow(pi);
+    const ctx = fakeCtx(cwd);
+    await pi.commands["simple-resume"].handler("", ctx);
+
+    assert.ok(ctx.notifications.some((n) => n.level === "error"), "reports an error notification");
+    assert.ok(!ctx.notifications.some((n) => n.level === "info"), "no success notification on failure");
+    assert.equal(load(cwd), null, "nothing tracked on a failed call");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

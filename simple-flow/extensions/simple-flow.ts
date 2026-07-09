@@ -7,8 +7,8 @@
  *   lib/state.ts    the single tracked-task record (.simple-flow/state.json)
  *   lib/todoist.ts  fail-loud, unbuffered Composio CLI client
  *
- * Later slices add /simple-comment, /simple-finish, /simple-update,
- * /simple-resume, /simple-status.
+ * Slices add /simple-status, /simple-comment, /simple-finish,
+ * /simple-update, and /simple-resume (the six-command set).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -187,6 +187,46 @@ export default function (pi: ExtensionAPI) {
 			try {
 				await client.update(tracked.taskId, fields);
 				ctx.ui.notify(`Updated Todoist task ${tracked.taskId}.`, "info");
+			} catch (e) {
+				ctx.ui.notify(e instanceof Error ? e.message : String(e), "error");
+			}
+		},
+	});
+
+	pi.registerCommand("simple-resume", {
+		description: "Pick an existing Todoist task in a project to track",
+		handler: async (args, ctx) => {
+			const cfg = loadConfig(ctx.cwd);
+			if (!cfg.enabled) {
+				ctx.ui.notify("simple-flow is disabled; enable it in simple-flow.json.", "warning");
+				return;
+			}
+			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o), debug: cfg.debug });
+			try {
+				const projects = await client.listProjects();
+				if (projects.length === 0) {
+					ctx.ui.notify("No Todoist projects found.", "warning");
+					return;
+				}
+				const pickedProject = await ctx.ui.select(
+					"Todoist project?",
+					projects.map((p) => p.name),
+				);
+				if (pickedProject === undefined) return;
+				const chosen = projects.find((p) => p.name === pickedProject)!;
+				const tasks = await client.listTasks(chosen.name);
+				if (tasks.length === 0) {
+					ctx.ui.notify(`No active tasks in "${chosen.name}".`, "warning");
+					return;
+				}
+				const pickedTask = await ctx.ui.select(
+					"Task to track?",
+					tasks.map((t) => t.content),
+				);
+				if (pickedTask === undefined) return;
+				const task = tasks.find((t) => t.content === pickedTask)!;
+				state.save(ctx.cwd, { taskId: task.id, project: chosen.name, content: task.content });
+				ctx.ui.notify(`Now tracking Todoist task ${task.id}.`, "info");
 			} catch (e) {
 				ctx.ui.notify(e instanceof Error ? e.message : String(e), "error");
 			}

@@ -20,6 +20,7 @@ export interface Todoist {
 	comment(taskId: string, text: string): Promise<void>;
 	close(taskId: string): Promise<void>;
 	update(taskId: string, fields: { content?: string; description?: string; due?: string; priority?: number }): Promise<void>;
+	listTasks(projectName: string): Promise<Array<{ id: string; content: string }>>;
 }
 
 /** Run one `composio execute` call. Throws (naming the Composio CLI) when
@@ -89,6 +90,24 @@ function parseFoundTask(stdout: string): { taskId: string; project: string } | n
 	}
 }
 
+/** Best-effort extraction of `{ id, content }` task pairs from a
+ * TODOIST_FILTER_TASKS response. Copied verbatim (shape) from slice-flow's
+ * todoist.ts: the list may sit under data.results or data.tasks; entries
+ * missing an id or content are dropped rather than guessed at. */
+function parseTaskList(stdout: string): Array<{ id: string; content: string }> {
+	type Entry = { id?: unknown; content?: unknown };
+	try {
+		const parsed = JSON.parse(stdout) as { data?: { results?: Entry[]; tasks?: Entry[] } | Entry[] };
+		const raw = parsed?.data;
+		const list: Entry[] = Array.isArray(raw) ? raw : (raw?.results ?? raw?.tasks ?? []);
+		return list
+			.filter((t): t is { id: string | number; content: string } => typeof t?.content === "string" && t.content.length > 0 && t?.id !== undefined && t?.id !== null)
+			.map((t) => ({ id: String(t.id), content: t.content }));
+	} catch {
+		return [];
+	}
+}
+
 /** Build a fail-loud Todoist client. Every method awaits its Composio call
  * inline (no buffer, no `flush`) and throws on any CLI/nonzero failure. */
 export function createClient(opts: { exec: Exec; debug?: boolean }): Todoist {
@@ -120,6 +139,10 @@ export function createClient(opts: { exec: Exec; debug?: boolean }): Todoist {
 			if (fields.priority !== undefined) params.priority = fields.priority;
 			// Never set params.labels — TODOIST_UPDATE_TASK replaces the whole label list.
 			await composioExec(exec, "TODOIST_UPDATE_TASK", params);
+		},
+		async listTasks(projectName) {
+			const stdout = await composioExec(exec, "TODOIST_FILTER_TASKS", { query: `#${projectName}` });
+			return parseTaskList(stdout);
 		},
 	};
 }

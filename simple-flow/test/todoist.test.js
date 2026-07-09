@@ -226,3 +226,56 @@ test("update throws (fail-loud) when exec returns a nonzero exit", async () => {
   });
   await assert.rejects(() => client.update("555", { due: "tomorrow" }), /Composio/);
 });
+
+test("listTasks issues composio execute TODOIST_FILTER_TASKS with a project-name filter query and parses the task list", async () => {
+  const records = [];
+  const client = createClient({
+    exec: fakeExec(records, () => ({
+      code: 0,
+      stdout: JSON.stringify({ data: { results: [{ id: "321", content: "fix the flaky login test" }, { id: "322", content: "write docs" }] } }),
+      stderr: "",
+    })),
+  });
+  const tasks = await client.listTasks("Work");
+  assert.deepEqual(tasks, [
+    { id: "321", content: "fix the flaky login test" },
+    { id: "322", content: "write docs" },
+  ]);
+  assert.equal(records[0].cmd, "composio");
+  assert.equal(records[0].args[0], "execute");
+  assert.equal(records[0].args[1], "TODOIST_FILTER_TASKS");
+  const params = JSON.parse(records[0].args[3]);
+  assert.equal(params.query, "#Work");
+});
+
+test("listTasks drops entries missing an id or content, and returns [] on an unparseable envelope", async () => {
+  const records = [];
+  const client = createClient({
+    exec: fakeExec(records, () => ({
+      code: 0,
+      stdout: JSON.stringify({ data: { results: [{ id: "321" }, { content: "no id here" }, { id: "322", content: "kept" }] } }),
+      stderr: "",
+    })),
+  });
+  const tasks = await client.listTasks("Work");
+  assert.deepEqual(tasks, [{ id: "322", content: "kept" }]);
+
+  const client2 = createClient({ exec: async () => ({ code: 0, stdout: "not json", stderr: "" }) });
+  assert.deepEqual(await client2.listTasks("Work"), []);
+});
+
+test("listTasks throws (fail-loud) when exec throws, naming the Composio CLI", async () => {
+  const client = createClient({
+    exec: async () => {
+      throw new Error("spawn ENOENT");
+    },
+  });
+  await assert.rejects(() => client.listTasks("Work"), /Composio/);
+});
+
+test("listTasks throws (fail-loud) when exec returns a nonzero exit", async () => {
+  const client = createClient({
+    exec: async () => ({ code: 1, stdout: "", stderr: "not authed" }),
+  });
+  await assert.rejects(() => client.listTasks("Work"), /Composio/);
+});
