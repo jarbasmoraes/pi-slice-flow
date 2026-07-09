@@ -10,7 +10,6 @@ import { join } from "node:path";
 
 export interface SimpleFlowConfig {
 	enabled: boolean;
-	debug?: boolean;
 }
 
 export const DEFAULT_CONFIG: SimpleFlowConfig = { enabled: false };

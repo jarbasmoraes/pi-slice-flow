@@ -6,9 +6,11 @@
  * loud error the user sees immediately, never a silent no-op. Declares its
  * OWN `Exec` type; does not import anything from slice-flow.
  *
- * Slice 001: `listProjects` + `createTask`. Slice 003 adds `findTask`, the
- * find-by-content recovery fallback used by the /simple-task handler when
- * the create response's id could not be parsed.
+ * Surface: `listProjects` and `createTask` (create + track), `findTask` (the
+ * find-by-content recovery fallback used by the /simple-task handler when the
+ * create response's id could not be parsed), `comment`, `close`, `update`
+ * (named fields only — never labels), and `listTasks` (project browse for
+ * /simple-resume).
  */
 
 export type Exec = (cmd: string, args: string[], opts?: { timeout?: number; cwd?: string }) => Promise<{ code: number; stdout: string; stderr: string }>;
@@ -110,7 +112,7 @@ function parseTaskList(stdout: string): Array<{ id: string; content: string }> {
 
 /** Build a fail-loud Todoist client. Every method awaits its Composio call
  * inline (no buffer, no `flush`) and throws on any CLI/nonzero failure. */
-export function createClient(opts: { exec: Exec; debug?: boolean }): Todoist {
+export function createClient(opts: { exec: Exec }): Todoist {
 	const { exec } = opts;
 	return {
 		async listProjects() {

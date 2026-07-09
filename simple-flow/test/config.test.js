@@ -45,15 +45,19 @@ test("loadConfig reads enabled from ~/.pi/simple-flow.json (global) and cwd over
   try {
     const piDir = join(home, ".pi");
     mkdirSync(piDir, { recursive: true });
-    writeFileSync(join(piDir, "simple-flow.json"), JSON.stringify({ enabled: true, debug: true }));
+    writeFileSync(join(piDir, "simple-flow.json"), JSON.stringify({ enabled: true }));
     const globalOnly = loadConfig(cwd, home);
     assert.equal(globalOnly.enabled, true, "global overlay applies when no project overlay exists");
-    assert.equal(globalOnly.debug, true);
 
+    // A project overlay that does not restate `enabled` leaves the global value intact.
+    writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({}));
+    const projectSilent = loadConfig(cwd, home);
+    assert.equal(projectSilent.enabled, true, "keys not restated by the project overlay survive from the global one");
+
+    // A project overlay that restates `enabled` wins over the global one.
     writeFileSync(join(cwd, "simple-flow.json"), JSON.stringify({ enabled: false }));
     const withProject = loadConfig(cwd, home);
     assert.equal(withProject.enabled, false, "project overlay wins over global");
-    assert.equal(withProject.debug, true, "keys not restated by the project overlay survive from the global one");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });

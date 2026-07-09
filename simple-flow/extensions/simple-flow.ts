@@ -1,14 +1,12 @@
 /**
  * simple-flow — lightweight conversational Todoist task tracker, explicit
- * slash commands only. This entry file is the composition root: slice 001
- * registers `/simple-task`, the only command shipped so far.
+ * slash commands only. This entry file is the composition root: it registers
+ * the full six-command set — /simple-task, /simple-status, /simple-comment,
+ * /simple-finish, /simple-update, and /simple-resume.
  *
  *   lib/config.ts   own defaults + simple-flow.json overlay (never slice-flow's)
  *   lib/state.ts    the single tracked-task record (.simple-flow/state.json)
  *   lib/todoist.ts  fail-loud, unbuffered Composio CLI client
- *
- * Slices add /simple-status, /simple-comment, /simple-finish,
- * /simple-update, and /simple-resume (the six-command set).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -67,7 +65,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Usage: /simple-task <prompt>", "warning");
 				return;
 			}
-			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o), debug: cfg.debug });
+			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o) });
 			try {
 				const projects = await client.listProjects();
 				if (projects.length === 0) {
@@ -132,7 +130,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("No tracked task. Run /simple-task or /simple-resume first.", "warning");
 				return;
 			}
-			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o), debug: cfg.debug });
+			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o) });
 			try {
 				await client.comment(tracked.taskId, text);
 				ctx.ui.notify(`Added comment to task ${tracked.taskId}.`, "info");
@@ -155,7 +153,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("No tracked task. Run /simple-task or /simple-resume first.", "warning");
 				return;
 			}
-			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o), debug: cfg.debug });
+			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o) });
 			try {
 				await client.close(tracked.taskId);
 				ctx.ui.notify(`Closed Todoist task ${tracked.taskId}.`, "info");
@@ -183,7 +181,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("No tracked task. Run /simple-task or /simple-resume first.", "warning");
 				return;
 			}
-			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o), debug: cfg.debug });
+			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o) });
 			try {
 				await client.update(tracked.taskId, fields);
 				ctx.ui.notify(`Updated Todoist task ${tracked.taskId}.`, "info");
@@ -201,7 +199,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("simple-flow is disabled; enable it in simple-flow.json.", "warning");
 				return;
 			}
-			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o), debug: cfg.debug });
+			const client = createClient({ exec: (c, a, o) => pi.exec(c, a, o) });
 			try {
 				const projects = await client.listProjects();
 				if (projects.length === 0) {
