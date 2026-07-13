@@ -97,7 +97,7 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Orchestrates the slice-flow feature workflow (frame -> architect -> plan -> implement -> verify -> loop). " +
 			"Each task lives in its own .pi/task/<slug>/ folder and several can be active at once. " +
-			"Actions: 'start' (requires description) begins a new task and returns its slug; 'next' validates the last step, runs approval gates, and returns the next directive; " +
+			"Actions: 'start' (requires description, unless todoist:'pick' adopts a Todoist task whose title stands in) begins a new task and returns its slug; 'next' validates the last step, runs approval gates, and returns the next directive; " +
 			"'status' reports state; 'abort' stops the task. During frame exploration only: 'research' (requires questions) fans out web researchers, " +
 			"'attack' spawns fresh adversaries against the draft framing, 'converge' compiles the decision ledger into the frame document. " +
 			"Cross-run, read-only: 'metrics' aggregates per-gate override rates, retries, and token spend across all tasks; " +
@@ -121,6 +121,13 @@ export default function (pi: ExtensionAPI) {
 				Type.Array(Type.String(), { description: "Research questions, one per researcher agent (required for action 'research')" }),
 			),
 			note: Type.Optional(Type.String({ description: "Optional context to record in the workflow log" })),
+			todoist: Type.Optional(
+				StringEnum(["create", "pick"] as const, {
+					description:
+						"Todoist start mode (action 'start' only): 'create' creates a new Todoist task for this run (/feature-todo-create); " +
+						"'pick' lists projects and their active tasks and adopts the chosen one (/feature-todo-start; description optional — the adopted task's text stands in).",
+				}),
+			),
 			judge: Type.Optional(
 				Type.String({ description: `Gate/judge to reflect on for action 'reflect' (one of ${Object.keys(REFLECT_RUBRICS).join(", ")}); omit to reflect on all.` }),
 			),
@@ -129,12 +136,27 @@ export default function (pi: ExtensionAPI) {
 			// `start` allocates a brand-new slug folder, so it never resolves an
 			// existing task; every other action targets one via openTask.
 			if (params.action === "start") {
-				if (!params.description?.trim()) throw new Error("action 'start' requires a non-empty description.");
 				const cfg = loadConfig(ctx.cwd);
+				// /feature-todo-start ("pick") adopts an existing Todoist task FIRST so
+				// its title can stand in for a missing description; every other start
+				// requires an explicit description (it names the run and, on the
+				// "create" path, titles the new Todoist task).
+				let todoist: Awaited<ReturnType<typeof setupTodoistStart>> = null;
+				if (params.todoist === "pick") {
+					todoist = await setupTodoistStart(ctx, cfg, (c, a, o) => pi.exec(c, a, o), params.description?.trim() ?? "", "pick");
+				}
+				const description = params.description?.trim() || todoist?.title?.trim();
+				if (!description) {
+					throw new Error(
+						params.todoist === "pick"
+							? "No Todoist task was adopted and no description was given. Pick a task, or start with /feature <description>."
+							: "action 'start' requires a non-empty description.",
+					);
+				}
 				const baseline = await gitBaseline(pi);
 				const judgeFamilies = await detectJudgeFamilies((c, a, o) => pi.exec(c, a, o));
 				if (cfg.gitignoreWorkDir && baseline !== null) ensureGitignored(ctx.cwd, cfg.workDir);
-				const slug = allocateSlug(ctx.cwd, cfg.workDir, params.description.trim());
+				const slug = allocateSlug(ctx.cwd, cfg.workDir, description);
 				const p = workPaths(ctx.cwd, cfg.workDir, slug);
 				const isolation = await setupWorktree(ctx, (c, a, o) => pi.exec(c, a, o), cfg, ctx.cwd, slug, baseline);
 				// Provision the per-project check-pack against the tree the build/verify
@@ -147,12 +169,18 @@ export default function (pi: ExtensionAPI) {
 				// build/scout agents can actually query.
 				const codegraphState = await detectCodegraph(auditCwd, (c, a, o) => pi.exec(c, a, o), ctx.cwd);
 				const checkLine = await provisionCheckPack(ctx, cfg, auditCwd, new Date().toISOString());
-				const todoist = await setupTodoistStart(ctx, cfg, (c, a, o) => pi.exec(c, a, o), params.description.trim());
+				// "pick" already adopted its task above (before slug allocation); the
+				// other modes run the Todoist setup here — "create" pre-answers the
+				// create/adopt question, undefined asks it as before.
+				if (params.todoist !== "pick") {
+					todoist = await setupTodoistStart(ctx, cfg, (c, a, o) => pi.exec(c, a, o), description, params.todoist);
+				}
 				// An adopted task's content+description+comments seeds the run's feature
 				// description; the push path (or no Todoist) leaves it as the human's
 				// literal description. Slug/paths above are allocated from the raw
-				// description, independent of this seed, so folder naming stays stable.
-				const feature = todoist?.seed?.trim() || params.description.trim();
+				// description (or the adopted task's title), independent of this seed,
+				// so folder naming stays stable.
+				const feature = todoist?.seed?.trim() || description;
 				const text = startWorkflow(p, cfg, feature, slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies, todoist ?? undefined);
 				await getTelemetry(cfg).flush();
 				await getTodoist(cfg, (c, a, o) => pi.exec(c, a, o)).flush();

@@ -19,7 +19,10 @@ test("the start action seeds `feature` from todoist?.seed, falling back to the r
 	const start = sliceFlowText.indexOf('if (params.action === "start")');
 	const next = sliceFlowText.indexOf('if (params.action === "metrics")');
 	const body = sliceFlowText.slice(start, next);
-	assert.match(body, /const feature = todoist\?\.seed\?\.trim\(\) \|\| params\.description\.trim\(\);/);
+	assert.match(body, /const feature = todoist\?\.seed\?\.trim\(\) \|\| description;/);
+	// `description` is the human's literal text when given; the adopted task's
+	// TITLE (never its unapproved seed text) stands in only on the pick path.
+	assert.match(body, /const description = params\.description\?\.trim\(\) \|\| todoist\?\.title\?\.trim\(\);/);
 });
 
 test("the start action passes `feature` (not params.description.trim()) into startWorkflow", () => {
@@ -29,9 +32,9 @@ test("the start action passes `feature` (not params.description.trim()) into sta
 	assert.match(body, /startWorkflow\(p, cfg, feature, slug, baseline, ctx\.cwd, codegraphState, isolation, judgeFamilies, todoist \?\? undefined\)/);
 });
 
-test("slug allocation still uses the raw params.description.trim(), independent of the seed", () => {
+test("slug allocation still uses the raw description (or adopted title), independent of the seed", () => {
 	const start = sliceFlowText.indexOf('if (params.action === "start")');
 	const next = sliceFlowText.indexOf('if (params.action === "metrics")');
 	const body = sliceFlowText.slice(start, next);
-	assert.match(body, /const slug = allocateSlug\(ctx\.cwd, cfg\.workDir, params\.description\.trim\(\)\);/);
+	assert.match(body, /const slug = allocateSlug\(ctx\.cwd, cfg\.workDir, description\);/);
 });

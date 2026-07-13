@@ -15,7 +15,8 @@
  * shape rather than the buffered `move`/`comment`/etc. Slice 008 (this slice)
  * adds `listSections`/`createSection` — the same awaited-immediate shape,
  * used by the adopt path to reconcile an existing project's board sections
- * before deciding `sectionMode`.
+ * before deciding `sectionMode`. `listTasks` (the /feature-todo-start pick
+ * path) lists a project's active tasks so the human can pick one to adopt.
  */
 
 import { basename } from "node:path";
@@ -78,6 +79,12 @@ export interface Todoist {
 	 * and existing comments, used to seed an adopted run's feature description.
 	 * Fails soft to empty strings/array on any failure. */
 	taskContext(taskId: string): Promise<{ content: string; description: string; comments: string[] }>;
+	/** Awaited, immediate lookup (not buffered): the ACTIVE tasks in a project,
+	 * as `{ id, content }` pairs, so the pick path (/feature-todo-start) can offer
+	 * a task picker. `projectName` is the project's display NAME — Todoist's list
+	 * endpoints scope by filter syntax (`#Name`), not by project id. Fails soft
+	 * to [] on any failure. */
+	listTasks(projectName: string): Promise<Array<{ id: string; content: string }>>;
 	/** Awaited, immediate lookup (not buffered): the section names present in a
 	 * project. Fails soft to an empty array on any failure — never restructures
 	 * a project this couldn't read. */
@@ -121,6 +128,9 @@ export const NOOP: Todoist = {
 	},
 	async taskContext() {
 		return { content: "", description: "", comments: [] };
+	},
+	async listTasks() {
+		return [];
 	},
 	async listSections() {
 		return [];
@@ -218,6 +228,24 @@ function parseFoundTask(stdout: string): { taskId: string; project: string } | n
 		return { taskId: String(id), project: String(project) };
 	} catch {
 		return null;
+	}
+}
+
+/** Best-effort extraction of `{ id, content }` task pairs from a
+ * TODOIST_FILTER_TASKS response (unconfirmed envelope, same caveat as
+ * parseFoundTask: the list may sit under data.results or data.tasks). Entries
+ * missing an id or content are dropped rather than guessed at. */
+function parseTaskList(stdout: string): Array<{ id: string; content: string }> {
+	type Entry = { id?: unknown; content?: unknown };
+	try {
+		const parsed = JSON.parse(stdout) as { data?: { results?: Entry[]; tasks?: Entry[] } | Entry[] };
+		const raw = parsed?.data;
+		const list: Entry[] = Array.isArray(raw) ? raw : (raw?.results ?? raw?.tasks ?? []);
+		return list
+			.filter((t): t is { id: string | number; content: string } => typeof t?.content === "string" && t.content.length > 0 && t?.id !== undefined && t?.id !== null)
+			.map((t) => ({ id: String(t.id), content: t.content }));
+	} catch {
+		return [];
 	}
 }
 
@@ -424,6 +452,24 @@ export function createTodoist(opts: { enabled: boolean; exec?: Exec; debug?: boo
 			} catch (e) {
 				if (opts.debug) console.error("[slice-flow todoist] taskContext threw:", e);
 				return { content: "", description: "", comments: [] };
+			}
+		},
+		// Confirmed via `composio tools info`: neither Todoist list tool takes a
+		// project_id — project scoping uses Todoist filter syntax (`#ProjectName`),
+		// so this takes the project's display NAME. TODOIST_FILTER_TASKS returns
+		// active tasks only (first page, default 50 — plenty for a picker). Fails
+		// soft to [] on any failure, matching every other lookup here.
+		async listTasks(projectName) {
+			try {
+				const res = await composioExec(exec, "TODOIST_FILTER_TASKS", { query: `#${projectName}` });
+				if (res.code !== 0) {
+					if (opts.debug) console.error("[slice-flow todoist] listTasks failed:", res.stderr || res.stdout);
+					return [];
+				}
+				return parseTaskList(res.stdout);
+			} catch (e) {
+				if (opts.debug) console.error("[slice-flow todoist] listTasks threw:", e);
+				return [];
 			}
 		},
 		// Confirmed via `composio tools info`: TODOIST_LIST_SECTIONS takes an

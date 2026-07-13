@@ -183,7 +183,7 @@ test("adopting an existing task by id: no create call, taskId is the adopted tas
 		},
 	});
 	const result = await setupTodoistStart(ctx, enabledCfg, fakeAdoptExec(records), "Feature X");
-	assert.deepEqual(result, { taskId: "7", project: "99", sectionMode: "sections", seed: "Fix the bug\n\nMore detail\n\nfirst\n\nsecond" });
+	assert.deepEqual(result, { taskId: "7", project: "99", sectionMode: "sections", seed: "Fix the bug\n\nMore detail\n\nfirst\n\nsecond", title: "Fix the bug" });
 	assert.equal(inputCalls.length, 1, "prompted exactly once (for the task to adopt), no separate project prompt");
 	assert.equal(confirmCalls.length, 1, "operator is asked to approve the pulled text before it seeds the run");
 	assert.ok(confirmCalls[0].description.includes("Fix the bug\n\nMore detail\n\nfirst\n\nsecond"), "the exact pulled seed is shown for review before approval");
@@ -203,7 +203,7 @@ test("declining the seed confirmation still adopts the task for board tracking b
 		confirm: async () => false,
 	});
 	const result = await setupTodoistStart(ctx, enabledCfg, fakeAdoptExec(records), "Feature X");
-	assert.deepEqual(result, { taskId: "7", project: "99", sectionMode: "sections" }, "task is adopted, but no seed key so feature falls back to the first-party description");
+	assert.deepEqual(result, { taskId: "7", project: "99", sectionMode: "sections", title: "Fix the bug" }, "task is adopted with its title, but no seed key so feature falls back to the first-party description");
 	assert.equal(result.seed, undefined, "third-party text never reaches the run when the operator declines");
 	resetTodoist();
 });
