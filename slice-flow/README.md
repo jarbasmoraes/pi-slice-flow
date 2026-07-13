@@ -331,7 +331,7 @@ the session's default model.
     "review": null,
     "fixup": null,
     "verify": "anthropic/claude-opus-4-8",
-    "verifyRegression": "anthropic/claude-sonnet-4-6"
+    "verifyRegression": "anthropic/claude-sonnet-5"
   }
 }
 ```

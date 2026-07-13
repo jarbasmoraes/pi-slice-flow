@@ -143,28 +143,32 @@ export async function setupWorktree(
  * when Todoist is disabled, when the client is a no-op, on a dismissed/blank
  * prompt, or on any failure — fail-soft end to end, mirroring setupWorktree.
  * Nothing is persisted here; the caller threads the result into startWorkflow.
+ *
+ * `mode` (the /feature-todo-* slash commands) pre-answers the create/adopt
+ * question: "create" skips straight to the push path's project picker;
+ * "pick" lists the projects, then the chosen project's active tasks, and
+ * adopts the selected one (no free-text query, no create). Omitted = ask,
+ * exactly as before. The returned `title` (adopt paths only) is the adopted
+ * task's content, so a /feature-todo-start run can name itself after the task
+ * even when the human declines the full text seed.
  */
 export async function setupTodoistStart(
 	ctx: GateContext,
 	cfg: SliceFlowConfig,
 	exec: Exec,
 	featureTitle: string,
-): Promise<{ taskId: string; project: string; sectionMode: "sections" | "comment-only"; seed?: string } | null> {
+	mode?: "create" | "pick",
+): Promise<{ taskId: string; project: string; sectionMode: "sections" | "comment-only"; seed?: string; title?: string } | null> {
 	if (!ctx.hasUI || cfg.todoist?.enabled !== true) return null;
 	try {
 		const client = getTodoist(cfg, exec);
 		if (!client.enabled) return null;
-		const mode = await ctx.ui.select("Start this run from Todoist?", ["Create a new Todoist task", "Adopt an existing Todoist task"]);
-		if (mode === undefined) return null;
-		if (mode === "Adopt an existing Todoist task") {
-			const query = await ctx.ui.input("Which Todoist task? (name or id)", "Task name or id to adopt, blank to skip Todoist");
-			if (!query || !query.trim()) return null;
-			const found = await client.findTask(query.trim());
-			if (!found) {
-				ctx.ui.notify(`Could not find a Todoist task matching "${query.trim()}". Continuing without Todoist.`, "warning");
-				return null;
-			}
-			const info = await client.taskContext(found.taskId);
+
+		// Adopt tail shared by the free-text query path and the pick path: read the
+		// task, gate its pulled text behind an explicit human approval, and
+		// reconcile the project's board sections before deciding sectionMode.
+		const adopt = async (taskId: string, project: string): Promise<{ taskId: string; project: string; sectionMode: "sections" | "comment-only"; seed?: string; title?: string }> => {
+			const info = await client.taskContext(taskId);
 			const seed = [info.content, info.description, ...info.comments].map((s) => (s ?? "").trim()).filter(Boolean).join("\n\n");
 			// Security trust boundary: an adopted task's content/description/comments
 			// are frequently third-party/multi-writer authored (shared Todoist
@@ -182,7 +186,7 @@ export async function setupTodoistStart(
 				);
 				if (useSeed) approvedSeed = seed;
 			}
-			const existing = await client.listSections(found.project); // fail-soft ⇒ []
+			const existing = await client.listSections(project); // fail-soft ⇒ []
 			const present = BOARD_SECTIONS.filter((s) => existing.includes(s));
 			let sectionMode: "sections" | "comment-only";
 			if (present.length === 0) {
@@ -191,12 +195,55 @@ export async function setupTodoistStart(
 				sectionMode = "sections";
 				for (const s of BOARD_SECTIONS) {
 					// create only the missing ones
-					if (!existing.includes(s)) await client.createSection(found.project, s);
+					if (!existing.includes(s)) await client.createSection(project, s);
 				}
 			}
-			const adopted: { taskId: string; project: string; sectionMode: "sections" | "comment-only"; seed?: string } = { taskId: found.taskId, project: found.project, sectionMode };
+			const adopted: { taskId: string; project: string; sectionMode: "sections" | "comment-only"; seed?: string; title?: string } = { taskId, project, sectionMode };
 			if (approvedSeed) adopted.seed = approvedSeed;
+			const title = (info.content ?? "").trim();
+			if (title) adopted.title = title;
 			return adopted;
+		};
+
+		if (mode === "pick") {
+			// /feature-todo-start: pick a project, then one of its active tasks, and
+			// adopt it. Every dismissed picker and every empty list falls through to
+			// null — the run continues without Todoist, same as every other bail here.
+			const projects = await client.listProjects();
+			if (projects.length === 0) {
+				ctx.ui.notify("No Todoist projects found. Continuing without Todoist.", "warning");
+				return null;
+			}
+			const picked = await ctx.ui.select("Todoist project?", projects.map((pr) => pr.name));
+			if (picked === undefined) return null;
+			const chosen = projects.find((pr) => pr.name === picked);
+			if (!chosen) return null;
+			const tasks = await client.listTasks(chosen.name);
+			if (tasks.length === 0) {
+				ctx.ui.notify(`No active tasks in Todoist project "${chosen.name}". Continuing without Todoist.`, "warning");
+				return null;
+			}
+			const pickedTask = await ctx.ui.select("Todoist task to start?", tasks.map((t) => t.content));
+			if (pickedTask === undefined) return null;
+			const task = tasks.find((t) => t.content === pickedTask);
+			if (!task) return null;
+			return adopt(task.id, chosen.id);
+		}
+
+		const choice =
+			mode === "create"
+				? "Create a new Todoist task"
+				: await ctx.ui.select("Start this run from Todoist?", ["Create a new Todoist task", "Adopt an existing Todoist task"]);
+		if (choice === undefined) return null;
+		if (choice === "Adopt an existing Todoist task") {
+			const query = await ctx.ui.input("Which Todoist task? (name or id)", "Task name or id to adopt, blank to skip Todoist");
+			if (!query || !query.trim()) return null;
+			const found = await client.findTask(query.trim());
+			if (!found) {
+				ctx.ui.notify(`Could not find a Todoist task matching "${query.trim()}". Continuing without Todoist.`, "warning");
+				return null;
+			}
+			return adopt(found.taskId, found.project);
 		}
 		// Pick from EXISTING projects: Todoist project names are not unique and
 		// cannot be used as ids, so we resolve to a real project id up front and

@@ -267,7 +267,10 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 		verify: "anthropic/claude-opus-4-8",
 		// Regression-check dims (already passing, re-run only to catch a regressed
 		// fix) run a cheaper tier; the failed dims under repair keep `verify` opus.
-		verifyRegression: "anthropic/claude-sonnet-4-6",
+		// Sonnet 5 supersedes Sonnet 4.6 in the same price tier with Opus-class
+		// agentic accuracy, so the regression re-checks get a strictly better model
+		// at no extra cost.
+		verifyRegression: "anthropic/claude-sonnet-5",
 	},
 };
 

@@ -2,3 +2,6 @@
 .pi/worktrees/
 .DS_Store
 .env
+.slice-flow/PROJECT.draft.md
+.slice-flow/init-brief.md
+.slice-flow/init-chain/
