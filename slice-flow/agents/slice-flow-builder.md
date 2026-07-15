@@ -7,7 +7,7 @@ tools: read, grep, find, ls, bash, edit, write
 # (slice-flow.json) or the session default. fallbackModels is the resilience
 # net so a provider outage on the pinned model doesn't strand the sole writer
 # thread — a code-capable chain, mirroring slice-flow-reviewer.
-fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3-coder-next:latest, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
+fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3.6-coder:latest, ollama/qwen3:30b-a3b-instruct-2507-q4_K_M, ollama/qwen3:14b
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false

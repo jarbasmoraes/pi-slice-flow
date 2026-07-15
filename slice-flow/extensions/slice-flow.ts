@@ -154,7 +154,20 @@ export default function (pi: ExtensionAPI) {
 					);
 				}
 				const baseline = await gitBaseline(pi);
-				const judgeFamilies = await detectJudgeFamilies((c, a, o) => pi.exec(c, a, o));
+				// Judge families come from pi's own model registry (provider auth), not
+				// a CLI probe: pi runs e.g. openai-codex/gpt-5.5 natively. Local (http)
+				// endpoints additionally need a liveness probe — /v1/models on the
+				// OpenAI-compat surface — so an offline LAN server drops its family. A
+				// registry failure degrades to Claude-only rather than blocking start.
+				let judgeFamilies: string[];
+				try {
+					judgeFamilies = await detectJudgeFamilies(ctx.modelRegistry.getAvailable(), async (baseUrl) => {
+						const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/models`, { signal: AbortSignal.timeout(1500) });
+						return res.ok;
+					});
+				} catch {
+					judgeFamilies = ["claude"];
+				}
 				if (cfg.gitignoreWorkDir && baseline !== null) ensureGitignored(ctx.cwd, cfg.workDir);
 				const slug = allocateSlug(ctx.cwd, cfg.workDir, description);
 				const p = workPaths(ctx.cwd, cfg.workDir, slug);

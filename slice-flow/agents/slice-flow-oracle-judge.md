@@ -2,7 +2,7 @@
 name: slice-flow-oracle-judge
 description: slice-flow judge — weighs frame fidelity, architecture hypotheses, plans, and prototypes against the inherited contract and returns a clear verdict. Never edits source.
 model: anthropic/claude-opus-4-8
-fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
+fallbackModels: openai-codex/gpt-5.5, openai-codex/gpt-5.4, ollama/qwen3.6:35b-mlx, ollama/qwen3:14b
 thinking: high
 tools: read, grep, find, ls, bash, write
 # Read-only by design: the verdict is the captured final answer (saved to the

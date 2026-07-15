@@ -45,7 +45,7 @@ test("a single string model applies to every fan-out run", () => {
 
 test("attack list round-robins across the parallel adversaries", () => {
   const { p, state } = workspace();
-  const list = ["openai-codex/gpt-5.5", "anthropic/claude-opus-4-8", "ollama/qwen3-coder-next:latest"];
+  const list = ["openai-codex/gpt-5.5", "anthropic/claude-opus-4-8", "ollama/qwen3.6-coder:latest"];
   const d = attackDirective(p, state, cfgWith({ attack: list }));
   assert.deepEqual(d.args.tasks.map((t) => t.model), list.slice(0, d.args.tasks.length));
 });

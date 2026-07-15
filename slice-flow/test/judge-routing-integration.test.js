@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { planDirective } from "../extensions/lib/directives.ts";
+import { architectDirective, buildDirective, loopDirective, planDirective, prototypeDirective } from "../extensions/lib/directives.ts";
 import { DEFAULT_CONFIG } from "../extensions/lib/config.ts";
 import { createState, ensureWorkTree, workPaths } from "../extensions/lib/workspace.ts";
 
@@ -59,4 +59,72 @@ test("seq=0 leaves candidate order unrotated (stable baseline)", () => {
 	const d = planDirective(p, state, { ...DEFAULT_CONFIG, planCount: 3 });
 	const candidates = d.args.chain[1].reads.filter((r) => /plan-\d\/plan\.md$/.test(r));
 	assert.match(candidates[0], /plan-1\/plan\.md$/);
+});
+
+// --- per-slice reviewer -------------------------------------------------------
+
+test("the per-slice reviewer cross-routes like a judge when another family exists", () => {
+	const { p, state } = setup("jr6");
+	state.judgeFamilies = ["claude", "gpt"];
+	state.slices = ["001-demo.md"];
+	const d = buildDirective(p, state, DEFAULT_CONFIG);
+	// chain = [builder, reviewer]; review: null is same-family (claude) → routed.
+	assert.match(d.args.chain[1].model, /gpt/);
+	assert.equal(d.args.chain[0].model, undefined, "the builder itself is never rerouted");
+});
+
+test("Claude-only: the reviewer keeps inheriting its agent default (no override)", () => {
+	const { p, state } = setup("jr7");
+	state.judgeFamilies = ["claude"];
+	state.slices = ["001-demo.md"];
+	const d = buildDirective(p, state, DEFAULT_CONFIG);
+	assert.equal(d.args.chain[1].model, undefined);
+});
+
+// --- tier-aware loop re-verification -------------------------------------------
+
+test("regression re-checks cross-route at the cheap tier; failed dims at the strong tier", () => {
+	const { p, state } = setup("jr8");
+	state.judgeFamilies = ["claude", "gpt"];
+	state.phase = "loop";
+	state.loopIteration = 1;
+	state.failedDimensions = ["security"];
+	const d = loopDirective(p, state, { ...DEFAULT_CONFIG, reverifyAllInLoop: true });
+	const group = d.args.chain.at(-1).parallel;
+	const regression = group.find((t) => /Regression-check/.test(t.label));
+	const failed = group.find((t) => /Re-verify security/.test(t.label));
+	assert.equal(regression.model, "openai-codex/gpt-5.4-mini", "cheap tier is preserved across the family boundary");
+	assert.equal(failed.model, "openai-codex/gpt-5.5", "dims under repair keep the strong tier");
+});
+
+test("with a live local family, regression re-checks go local while strong stays hosted", () => {
+	const { p, state } = setup("jr8b");
+	state.judgeFamilies = ["claude", "gpt", "qwen"];
+	state.phase = "loop";
+	state.loopIteration = 1;
+	state.failedDimensions = ["security"];
+	const d = loopDirective(p, state, { ...DEFAULT_CONFIG, reverifyAllInLoop: true });
+	const group = d.args.chain.at(-1).parallel;
+	assert.equal(group.find((t) => /Regression-check/.test(t.label)).model, "ollama/qwen3.6-coder:latest");
+	assert.equal(group.find((t) => /Re-verify security/.test(t.label)).model, "openai-codex/gpt-5.5");
+});
+
+// --- comparative judges position-swap -------------------------------------------
+
+test("the architecture judge position-swaps its hypothesis reads by seq", () => {
+	const { p, state } = setup("jr9");
+	state.seq = 1;
+	const d = architectDirective(p, state, DEFAULT_CONFIG);
+	const generated = d.args.chain[0].parallel.map((t) => t.output);
+	const judged = d.args.chain[1].reads.filter((r) => /hypothesis-[^/]+\.md$/.test(r));
+	assert.equal(judged.length, generated.length);
+	assert.deepEqual(judged, [...generated.slice(1), generated[0]], "seq=1 rotates the candidate order by one");
+});
+
+test("the prototype judge brief lists candidates in position-swapped order", () => {
+	const { p, state } = setup("jr10");
+	state.seq = 1;
+	const d = prototypeDirective(p, state, { ...DEFAULT_CONFIG, prototypeCount: 3 });
+	const brief = readFileSync(d.args.chain[1].reads[0], "utf8");
+	assert.match(brief, /proto-2, proto-3, proto-1/, "the brief carries the rotated inspection order");
 });

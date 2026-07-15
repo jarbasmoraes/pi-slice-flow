@@ -270,10 +270,13 @@ Hard rules:
 - Favor zero-build artifacts (single HTML file, or the project's existing dev stack mirrored locally) so the user can open it instantly.`;
 }
 
-export function prototypeJudgeBrief(p: Paths, total: number, notes?: string): string {
+export function prototypeJudgeBrief(p: Paths, total: number, notes?: string, order?: string[]): string {
+	// The judge discovers candidates from this brief, so the brief carries the
+	// position-swapped inspection order (first-position bias mitigation).
+	const dirs = order && order.length === total ? order : Array.from({ length: total }, (_, i) => `proto-${i + 1}`);
 	return `# Judge the UI prototypes
 
-${total} prototypes live in ${p.prototypes}/proto-1 .. proto-${total}. The frame and architecture are injected. Inspect every prototype's code and README.
+${total} prototypes live in ${p.prototypes}/. Inspect every prototype's code and README, in this order: ${dirs.join(", ")}. The frame and architecture are injected.
 
 Apply the injected prototype-rubric skill. It defines the refute-stance criteria, the per-candidate record you must produce so a human can override your pick, and the required first-line WINNER format. If NO prototype clears the bar, do not anoint a weak winner: make your first line exactly \`WINNER: NONE-ACCEPTABLE\` and give the reasons — the workflow will regenerate the prototypes rather than carry a weak slate into the plan.
 

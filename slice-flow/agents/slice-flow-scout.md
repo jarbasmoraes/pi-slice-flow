@@ -8,7 +8,7 @@ model: anthropic/claude-haiku-4-5
 # fallbackModels, so the chain must stay capable, not mini-tier — otherwise a
 # strong-model outage on hypothesis would silently drop to a mini model. Leads
 # with a capable general model; mini/local tiers degrade gracefully after.
-fallbackModels: openai-codex/gpt-5.4, openai-codex/gpt-5.4-mini, ollama/qwen3.6-27b-256k:latest, ollama/gemma4-31b-256k:latest
+fallbackModels: openai-codex/gpt-5.4, openai-codex/gpt-5.4-mini, ollama/qwen3:14b, ollama/qwen3.6:35b-mlx
 thinking: medium
 tools: read, grep, find, ls, bash, write
 systemPromptMode: replace
