@@ -136,7 +136,7 @@ function archReady(slug, uiShape) {
 	writeFileSync(p.architecture, VALID_ARCH);
 	const report = join(p.archAttacks, "001-x.md");
 	writeFileSync(report, "## Objection\nfine\n");
-	writeFileSync(p.archDispositions, "ARCH-ATTACK: HOLDS\n\n## Attack dispositions\n- resolved\n");
+	writeFileSync(p.archDispositions, "ARCH-ATTACK: HOLDS\n\n## Bottom line\nThe design holds; you decide whether to accept it.\n\n## Attack dispositions\n- resolved\n");
 	state.phase = "architect";
 	state.pending = { kind: "arch-attack", seq: 0, label: "attack", args: {}, expects: [report, p.archDispositions] };
 	state.ui = uiShape;

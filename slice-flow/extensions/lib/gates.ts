@@ -74,5 +74,6 @@ export async function askCheckPackConfirm(ctx: GateContext, profile: string): Pr
 
 export const PAUSE_MSG = (artifact: string, slug?: string) =>
 	`PAUSED awaiting human approval of ${artifact}. No approval was captured (no interactive UI, or the dialog was dismissed). ` +
-	`Tell the user to review the document and then either call slice_flow({"action":"next"${slug ? `,"slug":"${slug}"` : ""}}) again in an interactive session, ` +
+	`Before asking for a decision, summarize ${artifact} for the user in plain language: what it is (context), why it needs their call (what is at stake), and the options with your recommendation and reasoning — do not just point them at the file. ` +
+	`Then either call slice_flow({"action":"next"${slug ? `,"slug":"${slug}"` : ""}}) again in an interactive session, ` +
 	`or set "autoApprove": true in slice-flow.json for unattended runs. End your turn now.`;

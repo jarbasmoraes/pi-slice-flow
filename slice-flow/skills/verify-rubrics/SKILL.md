@@ -13,6 +13,7 @@ Common rules for every dimension:
 - Every finding needs file, line, reason, and severity (blocker|major|minor). Any blocker or major ⇒ FAIL.
 - First line of output: `VERDICT: PASS` or `VERDICT: FAIL`. Nothing before it.
 - Findings must be reproducible by a stranger: include the command or the cited code.
+- Findings must be legible to a human who may overrule the gate: open each blocker and major with one plain sentence saying what is wrong and why it matters (what breaks or is risked), before the file, line, and evidence. Define any term of art on first use.
 - Workflow metadata (the feature-work/ directory) is out of scope.
 
 ## Rubric: code-quality
