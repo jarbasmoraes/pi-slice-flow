@@ -33,4 +33,12 @@ The very first line of your synthesis is exactly `ARCH-ATTACK: HOLDS` or `ARCH-A
 
 - `RECONSIDER` when an objection shows the winning design is wrong on a frame-critical point — the kind of flaw that should send the architecture back for a re-judge or re-run.
 - `HOLDS` when every objection is resolved, rejected, or accepted as a tolerable risk.
-- After the marker, write a `## Attack dispositions` section: one entry per objection with its disposition and reason, ordered by severity.
+The reader is a human who lands on this cold, mid-multitask, with none of the architecture in their head. Orient them before the evidence. Immediately after the marker, write a `## Bottom line` section — the catch-up a cold reader needs to decide without scrolling anywhere else:
+
+- **What this is** — one line naming the feature and the design under attack, in plain terms.
+- **The verdict and why** — HOLDS or RECONSIDER and the one thing that decided it.
+- **What the human must decide** — the actual call in front of them (accept as-is, send back, accept with named risks).
+
+Then write a `## Attack dispositions` section: one entry per objection with its disposition and reason, ordered by severity. Lead each `RECONSIDER` and each `accepted as risk` entry with one plain-language sentence a reader who is not holding the code in their head can follow: what the concern is, why it matters (what breaks or gets locked in), and what deciding it wrong would cost. Define any term of art the first time it appears. Evidence and file paths come after that sentence, not instead of it.
+
+Section order is enforced by a deterministic lint: the marker first, then `## Bottom line` (non-empty), then `## Attack dispositions`. A synthesis that buries the decision below the evidence is rejected before it reaches the human.

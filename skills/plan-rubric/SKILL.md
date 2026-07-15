@@ -34,3 +34,5 @@ The very first line of your answer is exactly `VERDICT: PASS` or `VERDICT: FAIL`
 - FAIL if there is at least one blocker or major finding; PASS otherwise (minors allowed).
 - After the verdict, list each finding: the slice id (or "plan"), the dimension, the evidence (quote the slice or the frame criterion), and the smallest change that resolves it.
 - Findings must be evidence-backed. Name the slice and the frame/architecture element. No vibes.
+
+A human may read this verdict to overrule the gate, so make each blocker and major legible: begin its entry with one plain sentence stating what is wrong and why it matters (what the build or the feature loses if it ships as-is), before the quoted evidence and the fix. A finding a non-author cannot understand cannot be acted on.

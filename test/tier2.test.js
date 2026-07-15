@@ -13,6 +13,7 @@ import {
 	createState,
 	ensureWorkTree,
 	lintArchitecture,
+	lintDecisionLegibility,
 	lintPrototype,
 	prototypeWinnerOf,
 	workPaths,
@@ -187,6 +188,44 @@ test("lintArchitecture fails for a missing file", () => {
 	assert.equal(lintArchitecture(f).ok, false);
 });
 
+const LEGIBLE_DISPO = `ARCH-ATTACK: HOLDS
+
+## Bottom line
+This is the search-index redesign. Verdict HOLDS: every objection is resolved or a tolerable risk. You decide: accept as-is, or send back.
+
+## Attack dispositions
+- resolved — the seam already answers it.
+`;
+
+test("lintDecisionLegibility passes a disposition doc that orients a cold reader first", () => {
+	const { p } = setup("legible-ok");
+	writeFileSync(p.archDispositions, LEGIBLE_DISPO);
+	assert.equal(lintDecisionLegibility(p.archDispositions).ok, true);
+});
+
+test("lintDecisionLegibility fails when the ## Bottom line catch-up is missing", () => {
+	const { p } = setup("legible-no-bottom");
+	writeFileSync(p.archDispositions, "ARCH-ATTACK: HOLDS\n\n## Attack dispositions\n- resolved\n");
+	const r = lintDecisionLegibility(p.archDispositions);
+	assert.equal(r.ok, false);
+	assert.ok(r.findings.some((f) => f.includes("Bottom line")));
+});
+
+test("lintDecisionLegibility fails when the decision is buried below the evidence", () => {
+	const { p } = setup("legible-order");
+	writeFileSync(p.archDispositions, "ARCH-ATTACK: HOLDS\n\n## Attack dispositions\n- resolved\n\n## Bottom line\nToo late.\n");
+	const r = lintDecisionLegibility(p.archDispositions);
+	assert.equal(r.ok, false);
+	assert.ok(r.findings.some((f) => f.includes("before")));
+});
+
+test("lintDecisionLegibility fails an empty ## Bottom line and a missing file", () => {
+	const { p } = setup("legible-empty");
+	writeFileSync(p.archDispositions, "ARCH-ATTACK: HOLDS\n\n## Bottom line\n\n## Attack dispositions\n- resolved\n");
+	assert.equal(lintDecisionLegibility(p.archDispositions).ok, false);
+	assert.equal(lintDecisionLegibility(join(p.root, "nope.md")).ok, false);
+});
+
 test("archAttackMarkerOf parses HOLDS/RECONSIDER and null when absent", () => {
 	const { p } = setup("arch-marker");
 	writeFileSync(p.archDispositions, "ARCH-ATTACK: RECONSIDER\n\n## Attack dispositions\n");
@@ -246,7 +285,7 @@ function attackedReady(slug, marker) {
 	writeFileSync(p.architecture, VALID_ARCH);
 	const report = join(p.archAttacks, "001-wrong-seam.md");
 	writeFileSync(report, "## Objection\nthe seam leaks\n");
-	writeFileSync(p.archDispositions, `ARCH-ATTACK: ${marker}\n\n## Attack dispositions\n- resolved\n`);
+	writeFileSync(p.archDispositions, `ARCH-ATTACK: ${marker}\n\n## Bottom line\nThe design ${marker === "HOLDS" ? "holds" : "needs rework"}; you decide.\n\n## Attack dispositions\n- resolved\n`);
 	state.phase = "architect";
 	state.pending = { kind: "arch-attack", seq: 0, label: "attack", args: {}, expects: [report, p.archDispositions] };
 	return { p, state };

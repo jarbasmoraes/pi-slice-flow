@@ -549,6 +549,54 @@ export function archAttackMarkerOf(file: string): "HOLDS" | "RECONSIDER" | null 
 	return m ? (m[1].toUpperCase() as "HOLDS" | "RECONSIDER") : null;
 }
 
+// --- Decision legibility lint: a human-facing decision artifact must orient a
+//     COLD reader before the evidence. The framing-partner relay lives in chat
+//     and cannot be linted by the engine; the arch-attack disposition doc is the
+//     one decision artifact the engine gates, so we enforce the contract here. --
+
+/** Return the body lines of the first `## <heading>` section, or null when the
+ * heading is absent. Heading-scoped like `sectionHasTable`: `split(/^## /m)`
+ * drops the prefix so a `### ` subheading stays inside its parent body. */
+function sectionBodyLines(text: string, headingText: string): string[] | null {
+	const needle = headingText.toLowerCase();
+	const body = text.split(/^## /m).find((s) => s.toLowerCase().startsWith(needle));
+	if (body === undefined) return null;
+	return body.split("\n").slice(1);
+}
+
+/** Deterministic legibility lint for the arch-attack disposition artifact. A
+ * human lands on this cold, mid-multitask, so it must lead with orientation,
+ * not evidence. Mechanical only — presence, order, and non-emptiness of the
+ * `## Bottom line` catch-up section before `## Attack dispositions`. It cannot
+ * judge whether the prose is actually plain; that stays with the human gate and
+ * the architecture-attack skill. Skipped upstream when the file does not exist
+ * (no attack panel ran). */
+export function lintDecisionLegibility(file: string): FrameLint {
+	if (!nonEmpty(file)) return { ok: false, findings: [`${file} is missing or empty`] };
+	const text = readFileSync(file, "utf8");
+	const findings: string[] = [];
+
+	const firstLine = text.split(/\r?\n/).find((l) => l.trim().length > 0) ?? "";
+	if (!/^ARCH-ATTACK:\s*(HOLDS|RECONSIDER)\b/i.test(firstLine.trim()))
+		findings.push('first non-empty line must be the marker "ARCH-ATTACK: HOLDS" or "ARCH-ATTACK: RECONSIDER"');
+
+	const bottomLine = sectionBodyLines(text, "Bottom line");
+	if (bottomLine === null)
+		findings.push('missing "## Bottom line" — the plain-language catch-up a cold reader needs before the dispositions');
+	else if (!bottomLine.some((l) => l.trim().length > 0))
+		findings.push('"## Bottom line" is empty — it must recap what this is and what the human must decide');
+
+	const dispoIdx = text.search(/^## Attack dispositions/im);
+	if (dispoIdx === -1) findings.push('missing "## Attack dispositions" section');
+	else {
+		const bottomIdx = text.search(/^## Bottom line/im);
+		if (bottomIdx !== -1 && bottomIdx > dispoIdx)
+			findings.push('"## Bottom line" must come before "## Attack dispositions" — orient the reader before the evidence');
+	}
+
+	return { ok: findings.length === 0, findings };
+}
+
 /** First `WINNER: proto-<n>` marker in the prototype judgement; null when absent. */
 export function prototypeWinnerOf(file: string): string | null {
 	if (!existsSync(file)) return null;

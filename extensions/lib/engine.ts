@@ -53,6 +53,7 @@ import {
 	archAttackMarkerOf,
 	intakeMarkerOf,
 	lintArchitecture,
+	lintDecisionLegibility,
 	lintFrame,
 	lintMemo,
 	clearPrototypes,
@@ -700,14 +701,18 @@ async function architectGateAndAdvance(env: Env): Promise<string> {
 	const winner = winnerOf(p.architecture);
 	const valid = lint.ok && winner !== null;
 	const marker = archAttackMarkerOf(p.archDispositions);
+	// Legibility of the disposition doc only applies when the attack panel ran and
+	// produced the file; skip cleanly otherwise so this never blocks that path.
+	const legible = existsSync(p.archDispositions) ? lintDecisionLegibility(p.archDispositions) : { ok: true, findings: [] as string[] };
 
 	// Gate, with approval persisted BEFORE the UI question so a dismissed dialog
 	// never forces a second approval of the same document.
 	if (!state.archApproved) {
 		const warn =
 			(!valid ? ` WARNING: lint still failing after ${cfg.maxArchRejudge} re-judges (${lint.findings.length} findings${winner === null ? ", no WINNER marker" : ""}).` : "") +
-			(marker === "RECONSIDER" ? ` WARNING: attack panel says RECONSIDER (see ${p.archDispositions}).` : "");
-		const g = await gate(ctx, cfg, `Phase 2 (ARCHITECT) complete — approve the architecture?${warn}`, `${p.architecture} + ${p.archDispositions}`, "architect", valid && marker !== "RECONSIDER");
+			(marker === "RECONSIDER" ? ` WARNING: attack panel says RECONSIDER (see ${p.archDispositions}).` : "") +
+			(!legible.ok ? ` WARNING: the attack synthesis buries the decision (${legible.findings.length} legibility findings) — a cold reader can't act on it. See ${p.archDispositions}.` : "");
+		const g = await gate(ctx, cfg, `Phase 2 (ARCHITECT) complete — approve the architecture?${warn}`, `${p.architecture} + ${p.archDispositions}`, "architect", valid && marker !== "RECONSIDER" && legible.ok);
 		recordGate(cfg, state, "architect", g.decision);
 		if (g.decision === "pause") return PAUSE_MSG(p.architecture, state.slug);
 		if (g.decision === "abort") return stopped(p, state, "user aborted at architect gate", cfg);
