@@ -371,11 +371,21 @@ Notes:
   is quarantined as a warning.
 - `judgeFamily` mitigates Claude's confirmed **self-preference bias** (Claude
   over-rates its own family's output, and slice-flow is Claude-judging-Claude end to
-  end). `"cross"` (default) probes for a non-Claude model CLI at start and routes the
-  frame/architecture/plan/verify judges to a *different* family than the builders
-  where one exists; it degrades cleanly to the configured judge + a logged caveat +
+  end). `"cross"` (default) asks pi's model registry at start for an authenticated
+  non-Claude family (no provider CLI needed — pi runs e.g. `openai-codex/gpt-5.5`
+  natively) and routes the
+  frame/architecture/plan/verify judges *and the per-slice reviewer* to a *different*
+  family than the builders where one exists; it degrades cleanly to the configured
+  judge + a logged caveat (also surfaced on the completion gate) +
   **position-swap** (deterministic candidate-order rotation that cancels first-
-  position bias) when only the host family is present. `"same"` disables rerouting.
+  position bias, applied to the architecture, prototype, and plan comparative
+  judges) when only the host family is present. `"same"` disables rerouting.
+  Cross-routing is tier-aware: cheap judge steps (regression re-checks) route to
+  the family's `cheapModel` so crossing never silently promotes their cost tier.
+  A registry entry can be restricted to specific tiers (`tiers: ["cheap"]`): the
+  local `qwen` family (an ollama server, liveness-probed at start via its
+  OpenAI-compat `/models` endpoint) leads the cheap tier at ~zero marginal cost
+  but is never handed strong gate/verify judging.
 - `planCount` (default 2) fans out N independent plan decompositions into
   `plan-<n>/` candidate dirs and promotes the comparatively-judged winner — the
   divergence the architect phase has and plan previously lacked. Set it to `1`
@@ -431,7 +441,12 @@ Notes:
 - `hypothesis` and `fixup` default to the strong tier (hypothesis names Opus
   explicitly because its scout agent is Haiku-pinned; `fixup: null` inherits
   the builder's session default) — architecture seams and correctness fix-ups
-  are too high-leverage for the cheapest model.
+  are too high-leverage for the cheapest model. Known limitation: reasoning
+  effort is fixed per agent (`thinking:` frontmatter), so a model override does
+  not raise effort with it — hypotheses run Opus at the scout's `medium`
+  thinking, not the judges' `high`. The pi-subagents step schema has no
+  per-step thinking override today; if it gains one, pass `thinking: "high"`
+  wherever config promotes a cheap agent to a strong model.
 - `autoCommit: true` makes each slice one commit (`slice NNN: <title>`); the
   baseline commit recorded at `/feature` time scopes the verification diff.
 - `gitignoreWorkDir` appends `feature-work/` to `.gitignore` so slice commits
@@ -546,7 +561,7 @@ The extension is split by responsibility; each module has one reason to change:
 | `extensions/lib/detect-stack.ts` | stack probe → live risk axes → selected Tier-B checks + `.slice-flow/checks/manifest.json` IO | you add a detectable stack, axis, or template |
 | `extensions/lib/init.ts` | `/feature-init`: scout-drafted `.slice-flow/PROJECT.md` profile (parse/load) + manifest hole-filling/confirm | you change project-profile capture or its sections |
 | `extensions/lib/scanners.ts` | pure deterministic scanners (tenant-predicate, banned-tokens) over read files | you add or tune a scanner's logic |
-| `extensions/lib/judge-family.ts` | cross-family judge routing: family classification, resolver, CLI probe, position-swap | you add a judge family or change self-preference mitigation |
+| `extensions/lib/judge-family.ts` | cross-family judge routing: family classification, resolver, model-registry availability, position-swap | you add a judge family or change self-preference mitigation |
 | `extensions/lib/metrics.ts` | pure cross-run analysis: per-gate override rates, retries, token spend | you change the observability report |
 | `extensions/lib/engine.ts` | the phase state machine + cross-run reflect entry point | phase order/transitions change |
 

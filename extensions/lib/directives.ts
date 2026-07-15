@@ -42,7 +42,7 @@ import {
 } from "./briefs.ts";
 import { VERIFY_DIMENSIONS, hypothesisPaths, logEvent, nextSeqIn, pad3, planCandidateDir, priorMemoPaths, sliceArtifacts, slugify } from "./workspace.ts";
 import type { Directive, Paths, ReflectPaths, State, VerifyDimension } from "./workspace.ts";
-import { positionSwap, resolveJudge } from "./judge-family.ts";
+import { type JudgeTier, positionSwap, resolveJudge } from "./judge-family.ts";
 
 // --- Worktree isolation --------------------------------------------------------
 
@@ -90,9 +90,9 @@ function withModel(spec: string | string[] | null, i = 0): { model?: string } {
  * (probed at start, recorded on `state.judgeFamilies`), to dodge Claude's
  * self-preference bias. Degrades to the configured judge when only the host
  * family is present. A resolved null (session default) means "no override". */
-function judgeModel(cfg: SliceFlowConfig, state: State, spec: string | string[] | null, i = 0): { model?: string } {
+function judgeModel(cfg: SliceFlowConfig, state: State, spec: string | string[] | null, i = 0, tier: JudgeTier = "strong"): { model?: string } {
 	const base = modelAt(spec, i);
-	const resolved = resolveJudge(base, modelAt(cfg.models.build, 0), new Set(state.judgeFamilies ?? ["claude"]), cfg.judgeFamily ?? "cross");
+	const resolved = resolveJudge(base, modelAt(cfg.models.build, 0), new Set(state.judgeFamilies ?? ["claude"]), cfg.judgeFamily ?? "cross", tier);
 	return resolved.model ? { model: resolved.model } : {};
 }
 
@@ -249,6 +249,9 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 		logEvent(state, `warning: hypothesisCount ${cfg.hypothesisCount} exceeds the ${HYPOTHESIS_ANGLES.length} available angles; clamped`);
 	}
 	const angles = HYPOTHESIS_ANGLES.slice(0, Math.max(1, Math.min(cfg.hypothesisCount, HYPOTHESIS_ANGLES.length)));
+	// Capture the rotation key BEFORE makeBriefStep mutates state.seq, so the
+	// comparative judge's position-swap is stable within this directive build.
+	const swapSeq = state.seq;
 	const parallel = angles.map((a, i) => {
 		const step = makeBriefStep(p, state, `hypothesis-${a.id}-brief`, hypothesisBrief(p, a, notes, state.projectProfile));
 		return {
@@ -280,7 +283,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 				task: judgeStep.task,
 				label: "Judge hypotheses",
 				phase: "Architect",
-				reads: [judgeStep.briefPath, p.frame, ...hypoPaths],
+				reads: [judgeStep.briefPath, p.frame, ...positionSwap(hypoPaths, swapSeq)],
 				output: p.architecture,
 				outputMode: "file-only",
 				...judgeModel(cfg, state, cfg.models.architectJudge),
@@ -294,6 +297,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
  * mis-judged document costs one strong-model run, not a full fan-out. */
 export function architectJudgeDirective(p: Paths, state: State, cfg: SliceFlowConfig, notes?: string): Directive {
 	const hypos = hypothesisPaths(p);
+	const swapSeq = state.seq;
 	const judgeStep = makeBriefStep(p, state, "architect-rejudge-brief", architectJudgeBrief(p, hypos.length, notes, state.projectProfile));
 	return {
 		kind: "architect-judge",
@@ -306,7 +310,7 @@ export function architectJudgeDirective(p: Paths, state: State, cfg: SliceFlowCo
 				task: judgeStep.task,
 				label: "Re-judge hypotheses",
 				phase: "Architect",
-				reads: [judgeStep.briefPath, p.frame, ...hypos],
+				reads: [judgeStep.briefPath, p.frame, ...positionSwap(hypos, swapSeq)],
 				output: p.architecture,
 				outputMode: "file-only",
 				...judgeModel(cfg, state, cfg.models.architectJudge),
@@ -358,7 +362,17 @@ export function archAttackDirective(p: Paths, state: State, cfg: SliceFlowConfig
 	};
 }
 
+/** Prototype dir names in position-swapped order: the judge discovers candidates
+ * from its brief, so the swap is carried there rather than through `reads`. */
+function swappedProtoOrder(count: number, swapSeq: number): string[] {
+	return positionSwap(
+		Array.from({ length: count }, (_, i) => `proto-${i + 1}`),
+		swapSeq,
+	);
+}
+
 export function prototypeDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
+	const swapSeq = state.seq;
 	const parallel = Array.from({ length: cfg.prototypeCount }, (_, i) => {
 		const n = i + 1;
 		const step = makeBriefStep(p, state, `prototype-${n}-brief`, prototypeBrief(p, n, cfg.prototypeCount));
@@ -373,7 +387,7 @@ export function prototypeDirective(p: Paths, state: State, cfg: SliceFlowConfig)
 		};
 	});
 
-	const judgeStep = makeBriefStep(p, state, "prototype-judge-brief", prototypeJudgeBrief(p, cfg.prototypeCount));
+	const judgeStep = makeBriefStep(p, state, "prototype-judge-brief", prototypeJudgeBrief(p, cfg.prototypeCount, undefined, swappedProtoOrder(cfg.prototypeCount, swapSeq)));
 
 	return {
 		kind: "prototype",
@@ -399,7 +413,8 @@ export function prototypeDirective(p: Paths, state: State, cfg: SliceFlowConfig)
  * for lint retries and gate-revision re-judges, so a malformed judgement costs
  * one strong-model run, not a full prototype fan-out. */
 export function prototypeJudgeDirective(p: Paths, state: State, cfg: SliceFlowConfig, notes?: string): Directive {
-	const judgeStep = makeBriefStep(p, state, "prototype-rejudge-brief", prototypeJudgeBrief(p, cfg.prototypeCount, notes));
+	const swapSeq = state.seq;
+	const judgeStep = makeBriefStep(p, state, "prototype-rejudge-brief", prototypeJudgeBrief(p, cfg.prototypeCount, notes, swappedProtoOrder(cfg.prototypeCount, swapSeq)));
 	return {
 		kind: "prototype-judge",
 		seq: state.seq,
@@ -503,7 +518,10 @@ function reviewStep(p: Paths, state: State, cfg: SliceFlowConfig) {
 		// before this reviewer step launches within the same chain.
 		reads: [step.briefPath, a.slicePath, a.memoPath],
 		output: a.reviewPath,
-		...withModel(cfg.models.review),
+		// The reviewer PASS/FAILs the builder's own diff — a scoring judge, so it
+		// cross-routes like the verifiers. Attack panels stay withModel: they
+		// generate critiques rather than score, so self-preference doesn't bind.
+		...judgeModel(cfg, state, cfg.models.review),
 	};
 }
 
@@ -564,8 +582,9 @@ function verifierTask(p: Paths, state: State, cfg: SliceFlowConfig, dim: VerifyD
 		output: join(p.verify, `${dim}.md`),
 		// Verifiers refute the builder's own work — the textbook self-preference
 		// site — so they route cross-family too (degrading to the configured model
-		// when only the host family is present).
-		...judgeModel(cfg, state, isRegression ? cfg.models.verifyRegression : cfg.models.verify, i),
+		// when only the host family is present). Regression re-checks route at the
+		// cheap tier so crossing doesn't silently promote them to a strong model.
+		...judgeModel(cfg, state, isRegression ? cfg.models.verifyRegression : cfg.models.verify, i, isRegression ? "cheap" : "strong"),
 	};
 }
 

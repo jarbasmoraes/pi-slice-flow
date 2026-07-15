@@ -48,6 +48,42 @@ test("same mode never reroutes, but still reports whether it happens to be cross
 	assert.equal(cross.crossed, true);
 });
 
+test("cheap tier routes to the family's cheapModel; strong keeps the flagship", () => {
+	const strong = resolveJudge(CLAUDE, null, new Set(["claude", "gpt"]), "cross", "strong");
+	assert.equal(strong.model, "openai-codex/gpt-5.5");
+	const cheap = resolveJudge(CLAUDE, null, new Set(["claude", "gpt"]), "cross", "cheap");
+	assert.equal(cheap.model, "openai-codex/gpt-5.4-mini");
+	assert.equal(cheap.crossed, true);
+});
+
+test("tier defaults to strong when omitted", () => {
+	const r = resolveJudge(CLAUDE, null, new Set(["claude", "gpt"]), "cross");
+	assert.equal(r.model, "openai-codex/gpt-5.5");
+});
+
+test("cheap tier prefers the free local family when available; strong is never handed to it", () => {
+	const fams = new Set(["claude", "gpt", "qwen"]);
+	const cheap = resolveJudge(CLAUDE, null, fams, "cross", "cheap");
+	assert.equal(cheap.model, "ollama/qwen3.6-coder:latest", "cheap routes to the local family first");
+	const strong = resolveJudge(CLAUDE, null, fams, "cross", "strong");
+	assert.equal(strong.model, "openai-codex/gpt-5.5", "strong skips the cheap-only family");
+});
+
+test("a cheap-only family alone cannot take strong judging: degrade + caveat", () => {
+	const r = resolveJudge(CLAUDE, null, new Set(["claude", "qwen"]), "cross", "strong");
+	assert.equal(r.model, CLAUDE);
+	assert.equal(r.crossed, false);
+	assert.match(r.caveat, /self-preference bias/);
+});
+
+test("cheap tier still degrades to the configured judge + caveat when only the host family exists", () => {
+	const cheapJudge = "anthropic/claude-sonnet-5";
+	const r = resolveJudge(cheapJudge, null, new Set(["claude"]), "cross", "cheap");
+	assert.equal(r.model, cheapJudge);
+	assert.equal(r.crossed, false);
+	assert.match(r.caveat, /only the claude family is available/);
+});
+
 test("a non-Claude builder flips which family is 'self'", () => {
 	// Builder on GPT, judge configured GPT → same-family; route to claude.
 	const r = resolveJudge(GPT, GPT, new Set(["claude", "gpt"]), "cross");
@@ -57,23 +93,44 @@ test("a non-Claude builder flips which family is 'self'", () => {
 
 // --- detectJudgeFamilies ------------------------------------------------------
 
-test("detectJudgeFamilies always includes claude and adds families whose CLI is present", async () => {
-	const exec = async (_cmd, args) => ({ code: args[0] === "codex" ? 0 : 1 });
-	const fams = await detectJudgeFamilies(exec);
+test("detectJudgeFamilies always includes claude and adds families whose route model is runnable", async () => {
+	const fams = await detectJudgeFamilies([
+		{ provider: "anthropic", id: "claude-opus-4-8" },
+		{ provider: "openai-codex", id: "gpt-5.5" },
+	]);
 	assert.ok(fams.includes("claude"));
 	assert.ok(fams.includes("gpt"));
 });
 
-test("detectJudgeFamilies degrades to claude-only when no extra CLI is found", async () => {
-	const exec = async () => ({ code: 1 });
-	assert.deepEqual(await detectJudgeFamilies(exec), ["claude"]);
+test("detectJudgeFamilies degrades to claude-only when no registry route model is available", async () => {
+	assert.deepEqual(await detectJudgeFamilies([{ provider: "anthropic", id: "claude-opus-4-8" }]), ["claude"]);
+	assert.deepEqual(await detectJudgeFamilies([]), ["claude"]);
 });
 
-test("a throwing probe is treated as absent, never crashes", async () => {
-	const exec = async () => {
-		throw new Error("no such command");
-	};
-	assert.deepEqual(await detectJudgeFamilies(exec), ["claude"]);
+test("an available model that is not a registry route model does not enable its family", async () => {
+	// Only the exact route model counts: a stray gpt-family model pi can run is
+	// not what resolveJudge would route to.
+	assert.deepEqual(await detectJudgeFamilies([{ provider: "openai-codex", id: "gpt-5.3-codex-spark" }]), ["claude"]);
+});
+
+test("a local (http) family needs its endpoint to answer the probe; hosted families do not", async () => {
+	const models = [
+		{ provider: "openai-codex", id: "gpt-5.5", baseUrl: "https://chatgpt.com/backend-api" },
+		{ provider: "ollama", id: "qwen3.6-coder:latest", baseUrl: "http://jarbass-macbook-pro.local:11434/v1" },
+	];
+	const up = await detectJudgeFamilies(models, async () => true);
+	assert.deepEqual(new Set(up), new Set(["claude", "gpt", "qwen"]));
+	const down = await detectJudgeFamilies(models, async () => false);
+	assert.deepEqual(new Set(down), new Set(["claude", "gpt"]), "offline LAN server drops qwen, never gpt");
+	const throwing = await detectJudgeFamilies(models, async () => {
+		throw new Error("ECONNREFUSED");
+	});
+	assert.deepEqual(new Set(throwing), new Set(["claude", "gpt"]), "a throwing probe is absence, not a crash");
+});
+
+test("without a probe, a local family is taken on registry presence alone", async () => {
+	const fams = await detectJudgeFamilies([{ provider: "ollama", id: "qwen3.6-coder:latest", baseUrl: "http://host:11434/v1" }]);
+	assert.ok(fams.includes("qwen"));
 });
 
 // --- positionSwap -------------------------------------------------------------

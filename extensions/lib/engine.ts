@@ -1022,11 +1022,18 @@ async function onVerified(env: Env): Promise<string> {
 			return stopped(p, state, `check-pack FAILED (block mode): ${check.findings.join("; ")}. See ${join(p.verify, "check-pack.md")}`, cfg);
 		}
 		const checkWarn = check && !check.ok ? ` — note: check-pack found ${check.findings.length} issue(s) (warn mode; see ${join(p.verify, "check-pack.md")})` : "";
+		// Judge-family provenance at the decision point: when cross-family judging
+		// was requested but only the host family was present, the verifier panel
+		// that just passed everything was same-family — the human approving this
+		// gate should know that, not just the startup log.
+		const at0 = (s: SliceFlowConfig["models"]["verify"]) => (Array.isArray(s) ? (s[0] ?? null) : s);
+		const famCaveat = resolveJudge(at0(cfg.models.verify), at0(cfg.models.build), new Set(state.judgeFamilies ?? ["claude"]), cfg.judgeFamily ?? "cross").caveat;
+		const famWarn = famCaveat ? ` — judge provenance: ${famCaveat}` : "";
 		// Completion gate: the 5 refute verifiers are the mechanism; this gate is a
 		// removable overlay. autonomy.verify="auto" (or autoApprove) advances
 		// headless; "human" asks before declaring the feature done. A warn-mode
 		// check-pack finding marks the artifact not-clean so the human still sees it.
-		const g = await gate(env.ctx, cfg, `Verification clean on all 5 dimensions — accept and finish?${checkWarn}`, `${p.verify}/`, "verify", checkWarn === "");
+		const g = await gate(env.ctx, cfg, `Verification clean on all 5 dimensions — accept and finish?${checkWarn}${famWarn}`, `${p.verify}/`, "verify", checkWarn === "");
 		recordGate(cfg, state, "verify", g.decision);
 		if (g.decision === "pause") return PAUSE_MSG(`${p.verify}/`, state.slug);
 		if (g.decision === "abort") return stopped(p, state, "user aborted at verify completion gate", cfg);
