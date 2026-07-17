@@ -1,14 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+
+import { syncBundledAgents } from "../extensions/lib/engine.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(here, "..", "..");
 const pkgPath = join(here, "..", "package.json");
 const bundleDir = join(here, "..", "agents");
-const discoveredDir = join(repoRoot, ".pi", "agents");
+
+// .pi/agents/ is a *provisioned* artifact, not something to discover in a
+// fresh clone or CI — provision it into a throwaway dir so this test is
+// hermetic rather than depending on some ambient project's sync history.
+const tmpProjectDir = mkdtempSync(join(tmpdir(), "slice-flow-package-bundle-test-"));
+syncBundledAgents(tmpProjectDir, bundleDir);
+const discoveredDir = join(tmpProjectDir, ".pi", "agents");
 
 const roles = ["scout", "researcher", "builder", "oracle-adversary", "oracle-judge", "planner", "reviewer"];
 
