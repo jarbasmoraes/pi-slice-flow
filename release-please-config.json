@@ -5,7 +5,7 @@
 			"release-type": "node",
 			"package-name": "slice-flow",
 			"changelog-path": "CHANGELOG.md",
-			"bootstrap-sha": "01ccdb73ea0eabd5c4442a8d1de5c15806d0ee83"
+			"bootstrap-sha": "3d3ab4d5ac85c49ac52c646af43b738c93f6c4f3"
 		}
 	}
 }

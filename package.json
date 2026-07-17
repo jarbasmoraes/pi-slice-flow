@@ -1,6 +1,6 @@
 {
   "name": "slice-flow",
-  "version": "0.4.0",
+  "version": "0.3.0",
   "description": "Pi package: six-phase feature development workflow (frame, architect, plan, implement in slices, verify, loop) orchestrated on top of pi-subagents",
   "type": "module",
   "repository": {
