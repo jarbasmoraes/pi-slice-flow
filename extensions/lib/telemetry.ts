@@ -25,6 +25,9 @@ export interface TraceArgs {
 	input?: unknown;
 	output?: unknown;
 	metadata?: Record<string, unknown>;
+	/** Top-level Langfuse trace tags — the only field that feeds the
+	 * "Trace Tags" filter panel (metadata does NOT). */
+	tags?: string[];
 }
 
 export interface ObservationArgs {

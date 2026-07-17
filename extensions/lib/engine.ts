@@ -382,10 +382,71 @@ export function issue(p: Paths, state: State, directive: Directive, preamble = "
  * project. Performs no `await` and no `saveState` — callers remain
  * responsible for persistence, exactly as before slice 002's refactor.
  */
+/**
+ * The low-cardinality Langfuse trace-tag set for a run, computed from current
+ * state. These are the ONLY values that feed Langfuse's "Trace Tags" filter
+ * panel (metadata does not). Every tag is `prefix:value` so the UI groups them,
+ * and every value is categorical (never a free-form string or an id) so the tag
+ * space stays small and filterable. Re-computed and re-emitted on each phase
+ * transition, so `phase:<...>` always reflects the furthest phase reached.
+ */
+export function runTags(state: State): string[] {
+	const tags: string[] = [];
+	if (state.cohort) tags.push(`cohort:${state.cohort}`);
+	tags.push(`phase:${state.phase}`);
+	if (state.ui && state.ui !== "none") tags.push(`ui:${state.ui}`);
+	tags.push(`codegraph:${state.codegraphReady ? "ready" : "absent"}`);
+	const wt = state.isolation?.worktree;
+	tags.push(`isolation:${wt ? "worktree" : "inplace"}`);
+	if (wt?.branch) tags.push(`branch:${wt.branch}`);
+	if (state.isolation?.disposition) tags.push(`disposition:${normalizeDisposition(state.isolation.disposition)}`);
+	for (const fam of state.judgeFamilies ?? []) tags.push(`judge:${fam}`);
+	if (state.projectProfile) tags.push("profile:present");
+	if (state.todoist?.taskId) tags.push("todoist:on");
+	// One tag per retry counter that actually fired (>0). Counts are bounded by
+	// the workflow's retry budgets, so `retries:<gate>:<n>` stays low-cardinality.
+	const retries: Array<[string, number]> = [
+		["compile", state.compileRetries],
+		["arch-rejudge", state.archRejudgeRetries],
+		["arch-reconsider", state.archReconsiderRetries],
+		["plan", state.planRetries],
+		["prototype", state.prototypeRetries],
+	];
+	for (const [gate, n] of retries) if (n > 0) tags.push(`retries:${gate}:${n}`);
+	return tags;
+}
+
+/** Collapse a recorded branch disposition into a categorical tag value. The
+ * stored string is either a long human label (DISPOSITION_OPTIONS) or the
+ * headless `"manual"` default; tags need a small stable value, not the prose. */
+export function normalizeDisposition(d: string): string {
+	const s = d.toLowerCase();
+	if (s.includes("pr") || s.includes("pull request")) return "pr";
+	if (s.includes("merge to a local") || s.includes("local branch")) return "local-merge";
+	if (s.includes("manual")) return "manual";
+	return "other";
+}
+
 export function transitionPhase(state: State, next: Phase, reason: string, cfg: SliceFlowConfig): void {
 	const from = state.phase;
 	state.phase = next;
 	logEvent(state, `phase ${from} -> ${next}: ${reason}`, "phase");
+	// Refresh the Langfuse trace tags so `phase:<...>` tracks the furthest phase
+	// reached (and any state resolved after start, e.g. `ui:*`). Upsert by the
+	// stable trace id; telemetry is a memoized singleton so no `cwd` is needed
+	// here, and it no-ops when telemetry is off. Never throws into the workflow.
+	if (state.telemetry?.traceId) {
+		try {
+			getTelemetry(cfg).trace({
+				id: state.telemetry.traceId,
+				sessionId: state.slug,
+				metadata: { phase: state.phase, slug: state.slug, cohort: state.cohort },
+				tags: runTags(state),
+			});
+		} catch {
+			/* observability only */
+		}
+	}
 	const td = state.todoist;
 	if (!td?.taskId) return;
 	const client = getTodoist(cfg);
@@ -1345,7 +1406,13 @@ export function startWorkflow(
 	state.judgeFamilies = judgeFamilies;
 	state.telemetry = { traceId: randomUUID() };
 	logEvent(state, `started: ${state.feature}`, "lifecycle");
-	getTelemetry(cfg, cwd).trace({ id: state.telemetry.traceId, name: feature, sessionId: slug, metadata: { phase: state.phase, slug, cohort: state.cohort } });
+	getTelemetry(cfg, cwd).trace({
+		id: state.telemetry.traceId,
+		name: feature,
+		sessionId: slug,
+		metadata: { phase: state.phase, slug, cohort: state.cohort },
+		tags: runTags(state),
+	});
 	const cgLine = codegraphPreamble(codegraphState);
 	// One-time self-preference caveat, logged for provenance (not surfaced in the
 	// start banner: in the common Claude-only case it would fire on every run).

@@ -261,6 +261,7 @@ export default function (pi: ExtensionAPI) {
 					// NOOP and the stopped label/comment are silently discarded.
 					getTodoist(cfg, (c, a, o) => pi.exec(c, a, o));
 					const text = stopped(p, state, params.note ?? "aborted via slice_flow tool", cfg);
+					await getTelemetry(cfg, ctx.cwd).flush();
 					await getTodoist(cfg, (c, a, o) => pi.exec(c, a, o)).flush();
 					return { content: [{ type: "text", text }], details: { slug } };
 				}
