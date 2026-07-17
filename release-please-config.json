@@ -1,0 +1,17 @@
+{
+	"$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+	"packages": {
+		"slice-flow": {
+			"release-type": "node",
+			"package-name": "slice-flow",
+			"changelog-path": "CHANGELOG.md",
+			"bootstrap-sha": "c1e7547e4a337233a5e348c089352f008ce7c391"
+		},
+		"simple-flow": {
+			"release-type": "node",
+			"package-name": "simple-flow",
+			"changelog-path": "CHANGELOG.md",
+			"bootstrap-sha": "c1e7547e4a337233a5e348c089352f008ce7c391"
+		}
+	}
+}

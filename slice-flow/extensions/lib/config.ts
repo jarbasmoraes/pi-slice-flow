@@ -6,7 +6,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** A phase's model spec: a single model applied to every run; OR a list that
  * round-robins across a fan-out's parallel runs (so adversaries, hypotheses,
@@ -68,6 +69,15 @@ export interface SliceFlowAgents {
 export interface SliceFlowConfig {
 	/** Container dir (under cwd) that holds one slug-named folder per task. */
 	workDir: string;
+	/** Label stamped onto every task started while this value is current,
+	 * partitioning runs for before/after comparison (`slice_flow({"action":
+	 * "metrics"})` groups by it). Defaults to slice-flow's own released version
+	 * (see `releaseCohort` below) so bumping package.json's version at each
+	 * release IS starting a new cohort — no separate label to remember, and the
+	 * tag can never drift from the code that actually produced a run. Override
+	 * it in slice-flow.json only for a finer-grained tag within one version
+	 * (e.g. two experiments on the same release). */
+	cohort: string;
 	hypothesisCount: number;
 	/** Competing plan decompositions judged comparatively (mirrors hypothesisCount
 	 * for the architect). >1 fans out N independent planners into plan-<n>/
@@ -160,10 +170,29 @@ export interface SliceFlowConfig {
 	models: SliceFlowModels;
 }
 
+/** slice-flow's own package.json, resolved relative to this file so it
+ * resolves correctly regardless of where the package is installed from (npm,
+ * a local link, or this repo's own dogfooded copy). */
+const OWN_PACKAGE_JSON = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+
+/** The default cohort tag: slice-flow's own released version, prefixed "v" to
+ * read unambiguously in a metrics table (vs. a slug or a date). Never throws —
+ * a missing or malformed package.json degrades to "unknown" rather than
+ * breaking config loading, mirroring every other fail-soft read in this file. */
+function releaseCohort(): string {
+	try {
+		const pkg = JSON.parse(readFileSync(OWN_PACKAGE_JSON, "utf8")) as { version?: string };
+		return pkg.version ? `v${pkg.version}` : "unknown";
+	} catch {
+		return "unknown";
+	}
+}
+
 /** Defaults: cheap model for discovery and fix-ups, strong model for
  * architecture judging and verification, session default (null) for build. */
 export const DEFAULT_CONFIG: SliceFlowConfig = {
 	workDir: ".pi/task",
+	cohort: releaseCohort(),
 	hypothesisCount: 3,
 	planCount: 2,
 	prototypeCount: 3,

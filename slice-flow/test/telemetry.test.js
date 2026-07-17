@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createTelemetry } from "../extensions/lib/telemetry.ts";
+import { createTelemetry, parseEnvFile } from "../extensions/lib/telemetry.ts";
 import { createState, observeSubagentResult, sumUsage, workPaths, ensureWorkTree } from "../extensions/lib/workspace.ts";
 
 /** A telemetry instance with a capturing transport. */
@@ -60,6 +60,24 @@ test("a failing transport never throws out of flush", async () => {
 	const tel = createTelemetry({ enabled: true, send: async () => { throw new Error("langfuse down"); } });
 	tel.trace({ id: "t" });
 	await tel.flush(); // must resolve, not reject
+});
+
+test("parseEnvFile reads KEY=VALUE pairs, skipping blanks and comments", () => {
+  const text = "# a comment\n\nLANGFUSE_PUBLIC_KEY=pk-lf-abc\nLANGFUSE_BASE_URL=http://host:3100\n";
+  assert.deepEqual(parseEnvFile(text), {
+    LANGFUSE_PUBLIC_KEY: "pk-lf-abc",
+    LANGFUSE_BASE_URL: "http://host:3100",
+  });
+});
+
+test("parseEnvFile strips matching double or single quotes from a value", () => {
+  const text = `A="quoted value"\nB='single quoted'\nC=bare\n`;
+  assert.deepEqual(parseEnvFile(text), { A: "quoted value", B: "single quoted", C: "bare" });
+});
+
+test("parseEnvFile ignores lines with no '=' and trims whitespace around key/value", () => {
+  const text = "not a valid line\n  SPACED  =  value with spaces  \n";
+  assert.deepEqual(parseEnvFile(text), { SPACED: "value with spaces" });
 });
 
 test("sumUsage sums real per-agent usage from foreground details", () => {

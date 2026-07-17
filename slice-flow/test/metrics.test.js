@@ -7,6 +7,9 @@ import {
 	gatherOverrideCases,
 	overrideRate,
 	renderReport,
+	verdictPassRate,
+	groupByCohort,
+	renderCohortComparison,
 	GATE_ORDER,
 } from "../extensions/lib/metrics.ts";
 
@@ -16,6 +19,8 @@ function stateWith(slug, events, extra = {}) {
 		slug,
 		phase: extra.phase ?? "done",
 		tokensSpent: extra.tokensSpent ?? 0,
+		realCost: extra.realCost ?? 0,
+		cohort: extra.cohort ?? "baseline",
 		log: events.map((event, i) => ({ ts: `2026-01-01T00:00:0${i}.000Z`, event })),
 	};
 }
@@ -151,4 +156,48 @@ test("renderReport produces a markdown table and a per-task section", () => {
 test("renderReport handles the empty-tasks case without crashing", () => {
 	const report = renderReport(aggregate([]), []);
 	assert.match(report, /No tasks found/);
+});
+
+test("computeTaskMetrics carries cohort and realCost, defaulting to pre-cohort-tracking/0 when absent", () => {
+	const tagged = computeTaskMetrics(stateWith("a", [], { cohort: "opus-tiering-v2", realCost: 1.5 }));
+	assert.equal(tagged.cohort, "opus-tiering-v2");
+	assert.equal(tagged.realCost, 1.5);
+	const untagged = computeTaskMetrics({ slug: "b", phase: "done", tokensSpent: 0, log: [] });
+	assert.equal(untagged.cohort, "pre-cohort-tracking");
+	assert.equal(untagged.realCost, 0);
+});
+
+test("verdictPassRate is the fraction of non-null verdicts that PASS", () => {
+	assert.equal(verdictPassRate({ frame: "PASS", plan: "FAIL", verify: "PASS" }), 2 / 3);
+	assert.equal(verdictPassRate({ frame: null, plan: null }), 0);
+	assert.equal(verdictPassRate({}), 0);
+	assert.equal(verdictPassRate({ frame: "PASS" }), 1);
+});
+
+test("groupByCohort partitions tasks by cohort in first-seen order", () => {
+	const a1 = computeTaskMetrics(stateWith("a1", [], { cohort: "baseline" }));
+	const b1 = computeTaskMetrics(stateWith("b1", [], { cohort: "v2" }));
+	const a2 = computeTaskMetrics(stateWith("a2", [], { cohort: "baseline" }));
+	const groups = groupByCohort([a1, b1, a2]);
+	assert.deepEqual([...groups.keys()], ["baseline", "v2"]);
+	assert.deepEqual(groups.get("baseline").map((t) => t.slug), ["a1", "a2"]);
+	assert.deepEqual(groups.get("v2").map((t) => t.slug), ["b1"]);
+});
+
+test("renderCohortComparison is empty when there is only one cohort", () => {
+	const t = computeTaskMetrics(stateWith("a", [], { cohort: "baseline" }));
+	assert.equal(renderCohortComparison(groupByCohort([t])), "");
+	assert.equal(renderCohortComparison(groupByCohort([])), "");
+});
+
+test("renderCohortComparison renders a comparison row per cohort with pooled stats", () => {
+	const base1 = computeTaskMetrics(stateWith("base1", ["gate plan: revise"], { tokensSpent: 100, realCost: 1 }), { verify: "FAIL" });
+	const base2 = computeTaskMetrics(stateWith("base2", ["gate plan: approve"], { tokensSpent: 200, realCost: 2 }), { verify: "PASS" });
+	const v2 = computeTaskMetrics(stateWith("v2run", ["gate plan: approve"], { tokensSpent: 50, realCost: 0.5, cohort: "v2" }), { verify: "PASS" });
+	const report = renderCohortComparison(groupByCohort([base1, base2, v2]));
+	assert.match(report, /## Cohort comparison/);
+	// baseline: 2 tasks, avg tokens 150, avg cost $1.5000, override rate 1/2=50%, verdict pass rate 1/2=50%
+	assert.match(report, /\| baseline \| 2 \| 150 \| \$1\.5000 \| 50% \| 50% \| 0 \|/);
+	// v2: 1 task, avg tokens 50, avg cost $0.5000, override rate 0%, verdict pass rate 100%
+	assert.match(report, /\| v2 \| 1 \| 50 \| \$0\.5000 \| 0% \| 100% \| 0 \|/);
 });
