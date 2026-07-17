@@ -15,6 +15,51 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # No branch protection / required checks on this repo (that needs GitHub
+      # Pro on a private repo), so the safety gate lives here instead: check
+      # out the release PR's branch, run each package's own check/test, and
+      # only merge if they're green. A failing step skips every step after it
+      # (default `if` implies the job hasn't failed yet), so a red run simply
+      # leaves the PR open for a human instead of merging a broken release.
+      - name: Resolve release PR branch/number
+        if: ${{ steps.release.outputs.prs_created }}
+        id: pr
+        run: |
+          echo "branch=$(echo '${{ steps.release.outputs.pr }}' | jq -r '.headBranchName')" >> "$GITHUB_OUTPUT"
+          echo "number=$(echo '${{ steps.release.outputs.pr }}' | jq -r '.number')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: ${{ steps.release.outputs.prs_created }}
+        with:
+          ref: ${{ steps.pr.outputs.branch }}
+
+      - uses: actions/setup-node@v4
+        if: ${{ steps.release.outputs.prs_created }}
+        with:
+          node-version: 24
+
+      - name: slice-flow — install, typecheck, test
+        if: ${{ steps.release.outputs.prs_created }}
+        working-directory: slice-flow
+        run: |
+          npm install
+          npm run check
+          npm test
+
+      - name: simple-flow — install, test
+        if: ${{ steps.release.outputs.prs_created }}
+        working-directory: simple-flow
+        run: |
+          npm install
+          npm test
+
+      - name: Merge release PR
+        if: ${{ steps.release.outputs.prs_created }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge ${{ steps.pr.outputs.number }} --squash
