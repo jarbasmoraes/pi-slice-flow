@@ -1,6 +1,9 @@
 {
-  // Dev-only typecheck config (npm run check). Maps Pi peer modules to a
-  // locally installed pi-coding-agent; adjust the paths for your machine.
+  // Dev-only typecheck config (npm run check). The Pi peer modules
+  // (@earendil-works/pi-coding-agent, @earendil-works/pi-ai, typebox) are also
+  // listed as devDependencies so `npm install` resolves their real types from
+  // node_modules here — no machine-specific paths to maintain, so this works
+  // the same on a fresh clone or CI as it does locally.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -9,15 +12,7 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["node"],
-    "typeRoots": [
-      "/Users/jarbasmoraes/.nvm/versions/node/v24.13.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@types"
-    ],
-    "paths": {
-      "@earendil-works/pi-coding-agent": ["/Users/jarbasmoraes/.nvm/versions/node/v24.13.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"],
-      "@earendil-works/pi-ai": ["/Users/jarbasmoraes/.nvm/versions/node/v24.13.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.d.ts"],
-      "typebox": ["/Users/jarbasmoraes/.nvm/versions/node/v24.13.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/build/index.d.mts"]
-    }
+    "types": ["node"]
   },
   "include": ["extensions/**/*.ts"]
 }
