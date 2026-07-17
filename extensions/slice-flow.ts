@@ -328,7 +328,7 @@ export default function (pi: ExtensionAPI) {
 					name: state.pending.label,
 					startTime: new Date().toISOString(),
 					input: event.input,
-					metadata: { phase: state.phase, kind: state.pending.kind, seq: state.pending.seq },
+					metadata: { phase: state.phase, kind: state.pending.kind, seq: state.pending.seq, cohort: state.cohort },
 				});
 			}
 		} catch (e) {

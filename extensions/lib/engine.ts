@@ -1345,7 +1345,7 @@ export function startWorkflow(
 	state.judgeFamilies = judgeFamilies;
 	state.telemetry = { traceId: randomUUID() };
 	logEvent(state, `started: ${state.feature}`, "lifecycle");
-	getTelemetry(cfg, cwd).trace({ id: state.telemetry.traceId, name: feature, sessionId: slug, metadata: { phase: state.phase, slug } });
+	getTelemetry(cfg, cwd).trace({ id: state.telemetry.traceId, name: feature, sessionId: slug, metadata: { phase: state.phase, slug, cohort: state.cohort } });
 	const cgLine = codegraphPreamble(codegraphState);
 	// One-time self-preference caveat, logged for provenance (not surfaced in the
 	// start banner: in the common Claude-only case it would fire on every run).
