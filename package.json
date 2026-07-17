@@ -1,8 +1,13 @@
 {
   "name": "slice-flow",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pi package: six-phase feature development workflow (frame, architect, plan, implement in slices, verify, loop) orchestrated on top of pi-subagents",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jarbasmoraes/pi-slice-flow.git"
+  },
+  "homepage": "https://github.com/jarbasmoraes/pi-slice-flow",
   "keywords": [
     "pi-package",
     "pi",
