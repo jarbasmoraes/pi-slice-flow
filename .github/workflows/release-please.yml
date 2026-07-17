@@ -63,3 +63,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr merge ${{ steps.pr.outputs.number }} --squash
+
+      # release-please normally tags + publishes the GitHub Release on the NEXT
+      # run, triggered by the merge landing on main — but a push made with the
+      # default GITHUB_TOKEN never triggers another workflow run (GitHub's
+      # anti-loop rule), so that second pass would never happen on its own.
+      # Rather than adding a PAT/GitHub App just to re-trigger ourselves,
+      # simply invoke the action again right here: it re-reads the repo's
+      # current state from the API regardless of which job called it, so
+      # calling it a second time immediately after the merge does exactly what
+      # a real second run would have done — tag and publish — with no extra
+      # credential to create or rotate.
+      - name: Tag and publish the release now that the PR is merged
+        if: ${{ steps.release.outputs.prs_created }}
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
