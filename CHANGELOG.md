@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.3.0...slice-flow-v0.4.0) (2026-07-17)
+
+
+### Features
+
+* **observability:** tag Langfuse traces and observations with cohort ([bd81f25](https://github.com/jarbasmoraes/pi-slice-flow/commit/bd81f2584c7c3f8ee53cb76f015a91f1d019e8f0))
+
 ## [0.3.0](https://github.com/jarbasmoraes/pi-slice-flow/releases/tag/slice-flow-v0.3.0) (2026-07-17)
 
 First release of slice-flow as its own standalone repository, split out of
