@@ -42,6 +42,29 @@ Human-confirmed context about THIS codebase (.slice-flow/PROJECT.md). Treat it a
 ${body}`;
 }
 
+/** Mandatory code-discovery instructions for the codegraph-eligible phases
+ * (intake, hypothesis, build, fixup). Skill availability alone is easy for an
+ * agent to skip past unnoticed; folding the same instruction into the brief
+ * text puts it in the channel phases demonstrably follow (VERDICT_RULE,
+ * slice-rules discipline) instead of a separately-loadable skill. Empty when
+ * no index is present, so behavior is unchanged when `ready` is false —
+ * mirrors `projectProfileClause`'s empty-string contract. */
+export function codegraphClause(ready: boolean): string {
+	if (!ready) return "";
+	return `
+
+## Code discovery: use codegraph first
+
+This repo has a codegraph index. Before grep/find for a symbol, its definition, its callers/callees, or the blast radius of a change, run the matching command — it answers structurally, grep only approximates:
+- \`codegraph query <term> --json\` — find symbols matching a term
+- \`codegraph context <symbol> --json\` — definition + nearby relationships
+- \`codegraph callers <symbol> --json\` / \`codegraph callees <symbol> --json\`
+- \`codegraph impact <symbol> --json\` — blast radius of a change
+- \`codegraph files <term> --json\` — files for a term/symbol
+
+This is a hard requirement, not a suggestion: try the matching codegraph command first. Fall back to grep/find/read only when codegraph returns nothing, errors, or is unavailable.`;
+}
+
 export interface HypothesisAngle {
 	id: number;
 	angle: string;
@@ -59,7 +82,7 @@ const revisionFooter = (notes?: string, extra = "") =>
 
 // --- Frame v2 briefs (intake -> explore -> compile -> validate) ---------------
 
-export function intakeBrief(p: Paths, feature: string, profile?: ProjectProfile): string {
+export function intakeBrief(p: Paths, feature: string, codegraphReady: boolean, profile?: ProjectProfile): string {
 	return `# Intake check: is this feature description ready to frame?
 
 Feature request: ${feature}
@@ -77,7 +100,7 @@ You are the intake classifier for a feature workflow. The description above is t
    - **Checklist** — one line per checklist item: met or not met, and why.
    - **Questions** — only when the marker is QUESTIONS: a numbered batch of specific questions, each answerable in one sentence. Never more than 6.
 
-Do not edit any project files.${projectProfileClause(profile, ["domain"])}`;
+Do not edit any project files.${projectProfileClause(profile, ["domain"])}${codegraphClause(codegraphReady)}`;
 }
 
 export function researchBrief(feature: string, question: string, outPath: string): string {
@@ -208,7 +231,7 @@ After the verdict line, list each finding: the document section, the ledger entr
 Do not edit any files.`;
 }
 
-export function hypothesisBrief(p: Paths, a: HypothesisAngle, notes?: string, profile?: ProjectProfile): string {
+export function hypothesisBrief(p: Paths, a: HypothesisAngle, codegraphReady: boolean, notes?: string, profile?: ProjectProfile): string {
 	return `# Architecture hypothesis ${a.id}: ${a.angle}
 
 The approved frame document is injected. ${a.brief}
@@ -222,7 +245,7 @@ Review the actual codebase before proposing anything. Then produce ONE architect
 5. **Why this is good** — concrete advantages, grounded in the frame and the existing code.
 6. **What would falsify this** — the observations or constraints that would prove this design wrong.
 
-Do not edit any project files.${projectProfileClause(profile, ["invariants", "domain"])}${revisionFooter(notes)}`;
+Do not edit any project files.${projectProfileClause(profile, ["invariants", "domain"])}${codegraphClause(codegraphReady)}${revisionFooter(notes)}`;
 }
 
 export function architectJudgeBrief(p: Paths, hypothesisCount: number, notes?: string, profile?: ProjectProfile): string {
@@ -367,7 +390,7 @@ Your final answer is saved automatically to ${p.planJudgement}.
 Do not edit any files.`;
 }
 
-export function buildBrief(p: Paths, a: SliceArtifacts, autoCommit: boolean, profile?: ProjectProfile): string {
+export function buildBrief(p: Paths, a: SliceArtifacts, autoCommit: boolean, codegraphReady: boolean, profile?: ProjectProfile): string {
 	return `# Build ${a.sliceId}
 
 You are a fresh-context builder. Your ONLY contract is the injected slice file ${a.slicePath}. Memos from previously completed slices are injected as READ-ONLY context — they tell you what already exists; never re-do or modify their scope beyond what your slice demands.
@@ -379,7 +402,7 @@ Hard requirements:
 2. Tests first, then implementation, then run the tests and make them pass.
 3. ${autoCommit ? "Commit your work as ONE commit (auto_commit is enabled). Do not push." : "Do NOT commit (auto_commit is disabled); leave changes in the working tree."}
 4. Write your memo to ${a.memoPath} following the memo format in slice-rules. The memo MUST list every changed file${autoCommit ? " and the commit hash" : ""}.
-5. Never touch ${p.root} except to write the memo.${projectProfileClause(profile, ["conventions", "libs", "dod"])}`;
+5. Never touch ${p.root} except to write the memo.${projectProfileClause(profile, ["conventions", "libs", "dod"])}${codegraphClause(codegraphReady)}`;
 }
 
 export function reviewBrief(a: SliceArtifacts, fixupRound: number, profile?: ProjectProfile): string {
@@ -395,7 +418,7 @@ After the verdict line, list findings: each with file, line, severity (blocker|m
 You are review-only: do not edit, fix, or commit anything.${projectProfileClause(profile, ["conventions", "libs", "dod"])}`;
 }
 
-export function fixupBrief(a: SliceArtifacts, fixupRound: number, autoCommit: boolean): string {
+export function fixupBrief(a: SliceArtifacts, fixupRound: number, autoCommit: boolean, codegraphReady: boolean): string {
 	return `# Fix-up ${a.sliceId} (round ${fixupRound})
 
 You are a fresh-context fix-up agent with a deliberately narrow scope. The slice contract, the builder's memo, and the failed review are injected. Apply the injected slice-rules skill.
@@ -404,7 +427,7 @@ Hard requirements:
 1. Fix ONLY the blocker and major findings listed in the review. Do not refactor beyond them, do not expand scope.
 2. Keep tests green; add a test when a finding reveals a missing one.
 3. ${autoCommit ? "Commit the fix as one commit. Do not push." : "Do NOT commit; leave changes in the working tree."}
-4. Append a "## Fix-up round ${fixupRound}" section to the memo ${a.memoPath}: what you changed, files touched${autoCommit ? ", commit hash" : ""}.`;
+4. Append a "## Fix-up round ${fixupRound}" section to the memo ${a.memoPath}: what you changed, files touched${autoCommit ? ", commit hash" : ""}.${codegraphClause(codegraphReady)}`;
 }
 
 export function verifierBrief(p: Paths, dim: VerifyDimension, baselineCommit: string | null, workDir: string): string {

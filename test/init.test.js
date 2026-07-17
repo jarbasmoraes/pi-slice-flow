@@ -215,7 +215,7 @@ test("the drafted risk-model notes are live: plan judge brief embeds them", () =
 test("architect hypothesis brief embeds the invariants section", () => {
 	const profile = parseProfile(SAMPLE_PROFILE);
 	const p = { arch: "/a", frame: "/f" };
-	const brief = hypothesisBrief(p, { id: 1, angle: "minimal-change", brief: "x" }, undefined, profile);
+	const brief = hypothesisBrief(p, { id: 1, angle: "minimal-change", brief: "x" }, false, undefined, profile);
 	assert.match(brief, /### Architectural invariants & seams/);
 	assert.match(brief, /Cypher lives in db\//);
 });

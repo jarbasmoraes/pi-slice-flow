@@ -37,6 +37,12 @@ export interface TaskMetrics {
 	slug: string;
 	phase: string;
 	tokensSpent: number;
+	/** Real USD cost summed from subagent usage (0 when unavailable, e.g. async
+	 * mode) — a truer efficiency signal than tokensSpent's chars/4 estimate. */
+	realCost: number;
+	/** cfg.cohort at the time this task started (see config.ts). Tasks persisted
+	 * before cohort tracking existed back-fill to "baseline" (loadState). */
+	cohort: string;
 	gates: GateStat[];
 	retries: Record<string, number>;
 	/** Verdict files for this task, keyed by name, supplied by the caller's
@@ -133,10 +139,32 @@ export function computeTaskMetrics(state: State, verdicts: Record<string, "PASS"
 		slug: state.slug,
 		phase: state.phase,
 		tokensSpent: state.tokensSpent ?? 0,
+		realCost: state.realCost ?? 0,
+		cohort: state.cohort ?? "pre-cohort-tracking",
 		gates,
 		retries,
 		verdicts,
 	};
+}
+
+/** Fraction of this task's non-null verdicts that are PASS — 0 when every
+ * verdict is null (no verify/review artifact found yet) or there are none. */
+export function verdictPassRate(verdicts: Record<string, "PASS" | "FAIL" | null>): number {
+	const decided = Object.values(verdicts).filter((v): v is "PASS" | "FAIL" => v !== null);
+	if (decided.length === 0) return 0;
+	return decided.filter((v) => v === "PASS").length / decided.length;
+}
+
+/** Partition tasks by `cohort` (see config.ts), preserving first-seen order so
+ * a comparison table reads oldest-cohort-first without re-sorting by name. */
+export function groupByCohort(tasks: TaskMetrics[]): Map<string, TaskMetrics[]> {
+	const groups = new Map<string, TaskMetrics[]>();
+	for (const t of tasks) {
+		const group = groups.get(t.cohort);
+		if (group) group.push(t);
+		else groups.set(t.cohort, [t]);
+	}
+	return groups;
 }
 
 /**
@@ -203,6 +231,35 @@ export function gatherOverrideCases(tasks: TaskMetrics[], gate: string): Overrid
 }
 
 const pct = (r: number): string => `${(r * 100).toFixed(0)}%`;
+
+/** A one-row-per-cohort comparison: tasks, avg tokens, avg real cost, overall
+ * gate-override rate, pooled verdict pass rate, and total retries. Reuses
+ * `aggregate` per group so the per-gate math stays in one place — this adds
+ * only the side-by-side framing a single global `aggregate` can't give. Empty
+ * string when there is only one cohort (nothing to compare yet), so callers
+ * can unconditionally append it without an extra branch. Cohorts render in
+ * first-seen order, matching `groupByCohort`. */
+export function renderCohortComparison(tasksByCohort: Map<string, TaskMetrics[]>): string {
+	if (tasksByCohort.size <= 1) return "";
+	const lines: string[] = [];
+	lines.push("## Cohort comparison");
+	lines.push("");
+	lines.push("Did the last change to slice-flow help or hurt? Cohorts default to slice-flow's released version (package.json) — bumping it at each release starts a new one automatically. Override `cohort` in slice-flow.json only for a finer-grained tag within one version.");
+	lines.push("");
+	lines.push("| cohort | tasks | avg tokens | avg real cost | override rate | verdict pass rate | retries |");
+	lines.push("| --- | --- | --- | --- | --- | --- | --- |");
+	for (const [cohort, tasks] of tasksByCohort) {
+		const agg = aggregate(tasks);
+		const avgTokens = Math.round(agg.totals.tokensSpent / tasks.length);
+		const avgCost = tasks.reduce((sum, t) => sum + t.realCost, 0) / tasks.length;
+		const allVerdicts = tasks.flatMap((t) => Object.values(t.verdicts)).filter((v): v is "PASS" | "FAIL" => v !== null);
+		const passRate = allVerdicts.length === 0 ? "n/a" : pct(allVerdicts.filter((v) => v === "PASS").length / allVerdicts.length);
+		const overrideRatePooled = agg.totals.decisions === 0 ? "n/a" : pct(agg.totals.overrides / agg.totals.decisions);
+		const totalRetries = Object.values(agg.totals.retries).reduce((n, c) => n + c, 0);
+		lines.push(`| ${cohort} | ${tasks.length} | ${avgTokens} | $${avgCost.toFixed(4)} | ${overrideRatePooled} | ${passRate} | ${totalRetries} |`);
+	}
+	return lines.join("\n");
+}
 
 /** A compact markdown report: per-gate aggregated decisions + override rate,
  * aggregated retries, and a per-task token/phase line. */

@@ -13,6 +13,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { SliceFlowConfig } from "./config.ts";
 
 export interface TraceArgs {
@@ -147,20 +149,59 @@ function httpSend(baseUrl: string, publicKey: string, secretKey: string): SendFn
 	};
 }
 
+/** Minimal KEY=VALUE parser for a project `.env` file — no dependency, since
+ * this module deliberately carries none. Blank lines and '#' comments are
+ * skipped; quoted values keep their contents verbatim, unquoted values are
+ * trimmed. Not a general-purpose dotenv implementation — just enough to read
+ * the three LANGFUSE_* keys a project might keep alongside its other secrets. */
+export function parseEnvFile(text: string): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const line of text.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith("#")) continue;
+		const eq = trimmed.indexOf("=");
+		if (eq === -1) continue;
+		const key = trimmed.slice(0, eq).trim();
+		const raw = trimmed.slice(eq + 1).trim();
+		const quoted = /^"(.*)"$/.exec(raw) ?? /^'(.*)'$/.exec(raw);
+		out[key] = quoted ? quoted[1] : raw;
+	}
+	return out;
+}
+
+/** Read `<cwd>/.env` for LANGFUSE_* fallback credentials. Fails soft to {} — a
+ * missing or unreadable file is not an error, telemetry just stays off. */
+function readProjectEnv(cwd: string): Record<string, string> {
+	try {
+		return parseEnvFile(readFileSync(join(cwd, ".env"), "utf8"));
+	} catch {
+		return {};
+	}
+}
+
 let singleton: Telemetry | null = null;
 
 /** The process-wide telemetry client. Memoized so the event buffer accumulates
- * across the parent's tool calls within a turn and a single flush ships them.
- * No-op unless `cfg.telemetry.enabled` and all LANGFUSE_* env vars are present. */
-export function getTelemetry(cfg: SliceFlowConfig): Telemetry {
+ * across the parent's tool calls within a turn and a single flush ships them —
+ * and so only the FIRST call in a process's lifetime needs a real `cwd`; every
+ * later call (e.g. `recordGate`, which has no `cwd` in scope) reuses whatever
+ * this one resolved. No-op unless `cfg.telemetry.enabled` and all three
+ * LANGFUSE_* values are present, checking `process.env` first and falling back
+ * to `<cwd>/.env` — pi does not itself load a project's `.env`, so a repo that
+ * keeps its Langfuse keys there (rather than in the shell's own environment)
+ * still works. */
+export function getTelemetry(cfg: SliceFlowConfig, cwd?: string): Telemetry {
 	if (singleton) return singleton;
-	const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
-	const secretKey = process.env.LANGFUSE_SECRET_KEY;
-	const baseUrl = process.env.LANGFUSE_BASE_URL ?? process.env.LANGFUSE_HOST;
-	const enabled = cfg.telemetry?.enabled === true && !!publicKey && !!secretKey && !!baseUrl;
-	singleton = enabled
-		? createTelemetry({ enabled: true, send: httpSend(baseUrl!, publicKey!, secretKey!), debug: cfg.telemetry?.debug })
-		: NOOP;
+	if (cfg.telemetry?.enabled !== true) {
+		singleton = NOOP;
+		return singleton;
+	}
+	const projectEnv = cwd ? readProjectEnv(cwd) : {};
+	const publicKey = process.env.LANGFUSE_PUBLIC_KEY ?? projectEnv.LANGFUSE_PUBLIC_KEY;
+	const secretKey = process.env.LANGFUSE_SECRET_KEY ?? projectEnv.LANGFUSE_SECRET_KEY;
+	const baseUrl = process.env.LANGFUSE_BASE_URL ?? process.env.LANGFUSE_HOST ?? projectEnv.LANGFUSE_BASE_URL ?? projectEnv.LANGFUSE_HOST;
+	const enabled = !!publicKey && !!secretKey && !!baseUrl;
+	singleton = enabled ? createTelemetry({ enabled: true, send: httpSend(baseUrl, publicKey, secretKey), debug: cfg.telemetry?.debug }) : NOOP;
 	return singleton;
 }
 

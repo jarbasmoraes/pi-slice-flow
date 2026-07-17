@@ -75,6 +75,7 @@ export interface State {
 	realCost: number; // real USD cost summed from subagent usage (0 when unavailable, e.g. async mode)
 	seq: number;
 	codegraphReady: boolean; // a .codegraph/*.db index present at start; gates later codegraph skill injection
+	cohort: string; // cfg.cohort at start — partitions runs for before/after comparison (see metrics.ts)
 	/** Confirmed live risk axes from the check-pack manifest (empty when no
 	 * confirmed profile). Drives the plan-judge coverage lens (phase 3). */
 	liveAxes?: string[];
@@ -256,6 +257,10 @@ export function createState(
 		realCost: 0,
 		seq: 0,
 		codegraphReady: false,
+		// Always overwritten by startWorkflow's `state.cohort = cfg.cohort`
+		// immediately after creation; this placeholder only matters if createState
+		// is ever used outside that path.
+		cohort: "unknown",
 		liveAxes: [],
 		judgeFamilies: ["claude"],
 		log: [],
@@ -284,6 +289,10 @@ export function loadState(p: Paths): State | null {
 	s.archAttacked = s.archAttacked ?? false;
 	s.archWinner = s.archWinner ?? null;
 	s.codegraphReady = s.codegraphReady ?? false;
+	// Distinct from createState's "unknown": this task predates cohort tracking
+	// entirely, so there is no real version to attribute it to — using the
+	// CURRENT package version here would misrepresent what code actually ran.
+	s.cohort = s.cohort ?? "pre-cohort-tracking";
 	s.liveAxes = s.liveAxes ?? [];
 	s.judgeFamilies = s.judgeFamilies ?? ["claude"];
 	return s;

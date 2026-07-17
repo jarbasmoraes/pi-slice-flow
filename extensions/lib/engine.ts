@@ -92,6 +92,11 @@ interface Env {
 	state: State;
 	pending: Directive;
 	exec?: Exec;
+	/** The real repo root, threaded through only so `recordGate` can resolve
+	 * the telemetry singleton's `.env` fallback on whichever call happens
+	 * first in a fresh process (e.g. a `/feature-resume` landing straight on a
+	 * pending gate) — optional so every existing test call site is unaffected. */
+	cwd?: string;
 }
 
 /**
@@ -416,11 +421,11 @@ export function stopped(p: Paths, state: State, reason: string, cfg: SliceFlowCo
 /** Record a gate decision: the structured log entry (override-rate evidence)
  * AND a Langfuse score on the run's trace (1 when the human accepted the judged
  * artifact, 0 otherwise). Both fail-soft; telemetry no-ops when disabled. */
-function recordGate(cfg: SliceFlowConfig, state: State, gate: string, decision: string): void {
+function recordGate(cfg: SliceFlowConfig, state: State, gate: string, decision: string, cwd?: string): void {
 	logGate(state, gate, decision);
 	const traceId = state.telemetry?.traceId;
 	if (traceId) {
-		getTelemetry(cfg).score({
+		getTelemetry(cfg, cwd).score({
 			id: `${state.slug}:gate:${gate}:${state.seq}`,
 			traceId,
 			name: `gate-${gate}`,
@@ -444,7 +449,7 @@ async function runGate(env: Env, title: string, artifact: string, onRevise: (not
 	const g = await gate(env.ctx, env.cfg, title, artifact, gateId, clean);
 	// Tag the decision with the gate id so T3 can pair judge verdicts against
 	// human overrides per gate and tune each rubric over time.
-	recordGate(env.cfg, env.state, gateId ?? env.pending.kind, g.decision);
+	recordGate(env.cfg, env.state, gateId ?? env.pending.kind, g.decision, env.cwd);
 	if (g.decision === "pause") return PAUSE_MSG(artifact, env.state.slug);
 	if (g.decision === "abort") return stopped(env.p, env.state, `user aborted at ${env.pending.kind} gate`, env.cfg);
 	if (g.decision === "revise") {
@@ -616,7 +621,7 @@ async function onFrameCompiled(env: Env): Promise<string> {
 			? ` WARNING: validation still failing after ${cfg.maxCompileRetries} recompiles (lint: ${lint.ok ? "ok" : lint.findings.length + " findings"}, judge: ${judgeVerdict}; see ${p.frameJudgement}).`
 			: "";
 	const g = await gate(ctx, cfg, `Phase 1 (FRAME) complete — approve the frame?${warn}`, p.frame, "frame", lint.ok && judgeVerdict !== "FAIL");
-	recordGate(cfg, state, "frame", g.decision);
+	recordGate(cfg, state, "frame", g.decision, env.cwd);
 	if (g.decision === "pause") return PAUSE_MSG(p.frame, state.slug);
 	if (g.decision === "abort") return stopped(p, state, "user aborted at frame gate", cfg);
 	if (g.decision === "revise") {
@@ -713,7 +718,7 @@ async function architectGateAndAdvance(env: Env): Promise<string> {
 			(marker === "RECONSIDER" ? ` WARNING: attack panel says RECONSIDER (see ${p.archDispositions}).` : "") +
 			(!legible.ok ? ` WARNING: the attack synthesis buries the decision (${legible.findings.length} legibility findings) — a cold reader can't act on it. See ${p.archDispositions}.` : "");
 		const g = await gate(ctx, cfg, `Phase 2 (ARCHITECT) complete — approve the architecture?${warn}`, `${p.architecture} + ${p.archDispositions}`, "architect", valid && marker !== "RECONSIDER" && legible.ok);
-		recordGate(cfg, state, "architect", g.decision);
+		recordGate(cfg, state, "architect", g.decision, env.cwd);
 		if (g.decision === "pause") return PAUSE_MSG(p.architecture, state.slug);
 		if (g.decision === "abort") return stopped(p, state, "user aborted at architect gate", cfg);
 		if (g.decision === "revise") {
@@ -1034,7 +1039,7 @@ async function onVerified(env: Env): Promise<string> {
 		// headless; "human" asks before declaring the feature done. A warn-mode
 		// check-pack finding marks the artifact not-clean so the human still sees it.
 		const g = await gate(env.ctx, cfg, `Verification clean on all 5 dimensions — accept and finish?${checkWarn}${famWarn}`, `${p.verify}/`, "verify", checkWarn === "");
-		recordGate(cfg, state, "verify", g.decision);
+		recordGate(cfg, state, "verify", g.decision, env.cwd);
 		if (g.decision === "pause") return PAUSE_MSG(`${p.verify}/`, state.slug);
 		if (g.decision === "abort") return stopped(p, state, "user aborted at verify completion gate", cfg);
 		if (g.decision === "revise") {
@@ -1324,6 +1329,7 @@ export function startWorkflow(
 	const state = createState(feature, slug, baselineCommit, isolation);
 	if (todoist) state.todoist = { ...todoist, attachedFrame: false, attachedArch: false };
 	state.codegraphReady = codegraphState === "ready";
+	state.cohort = cfg.cohort;
 	// Surface the confirmed check-pack risk profile to the plan judge (phase 3):
 	// a confirmed manifest's live axes become the coverage lens; an unconfirmed or
 	// absent profile leaves liveAxes empty (the judge runs exactly as before).
@@ -1339,7 +1345,7 @@ export function startWorkflow(
 	state.judgeFamilies = judgeFamilies;
 	state.telemetry = { traceId: randomUUID() };
 	logEvent(state, `started: ${state.feature}`, "lifecycle");
-	getTelemetry(cfg).trace({ id: state.telemetry.traceId, name: feature, sessionId: slug, metadata: { phase: state.phase, slug } });
+	getTelemetry(cfg, cwd).trace({ id: state.telemetry.traceId, name: feature, sessionId: slug, metadata: { phase: state.phase, slug } });
 	const cgLine = codegraphPreamble(codegraphState);
 	// One-time self-preference caveat, logged for provenance (not surfaced in the
 	// start banner: in the common Claude-only case it would fire on every run).
@@ -1357,7 +1363,7 @@ export function startWorkflow(
 	);
 }
 
-export async function nextStep(ctx: GateContext, p: Paths, cfg: SliceFlowConfig, state: State, exec?: Exec): Promise<string> {
+export async function nextStep(ctx: GateContext, p: Paths, cfg: SliceFlowConfig, state: State, exec?: Exec, cwd?: string): Promise<string> {
 	getTodoist(cfg, exec);
 	if (state.phase === "done") return `Workflow already complete. Final docs are under ${p.root}/.`;
 	if (state.phase === "stopped") return `Workflow is stopped. Start fresh with /feature after clearing ${p.root}, or inspect ${p.report}.`;
@@ -1368,7 +1374,7 @@ export async function nextStep(ctx: GateContext, p: Paths, cfg: SliceFlowConfig,
 	if (!pending) return stopped(p, state, "internal error: no pending directive", cfg);
 	const handler = HANDLERS[pending.kind];
 	if (!handler) return stopped(p, state, `unknown pending directive kind "${pending.kind}"`, cfg);
-	return handler({ ctx, p, cfg, state, pending, exec });
+	return handler({ ctx, p, cfg, state, pending, exec, cwd });
 }
 
 function writeBreachReport(p: Paths, state: State, cfg: SliceFlowConfig, reason: string): void {

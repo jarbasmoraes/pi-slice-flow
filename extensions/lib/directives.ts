@@ -138,7 +138,7 @@ export function logDirective(p: Paths, directive: Directive): void {
 // --- Phase directives ----------------------------------------------------------
 
 export function intakeDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
-	const step = makeBriefStep(p, state, "intake-brief", intakeBrief(p, state.feature, state.projectProfile));
+	const step = makeBriefStep(p, state, "intake-brief", intakeBrief(p, state.feature, state.codegraphReady, state.projectProfile));
 	return {
 		kind: "intake",
 		seq: state.seq,
@@ -253,7 +253,7 @@ export function architectDirective(p: Paths, state: State, cfg: SliceFlowConfig,
 	// comparative judge's position-swap is stable within this directive build.
 	const swapSeq = state.seq;
 	const parallel = angles.map((a, i) => {
-		const step = makeBriefStep(p, state, `hypothesis-${a.id}-brief`, hypothesisBrief(p, a, notes, state.projectProfile));
+		const step = makeBriefStep(p, state, `hypothesis-${a.id}-brief`, hypothesisBrief(p, a, state.codegraphReady, notes, state.projectProfile));
 		return {
 			agent: cfg.agents.hypothesis,
 			task: step.task,
@@ -527,7 +527,7 @@ function reviewStep(p: Paths, state: State, cfg: SliceFlowConfig) {
 
 export function buildDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
 	const a = sliceArtifacts(p, state);
-	const step = makeBriefStep(p, state, `${a.sliceId}-build-brief`, buildBrief(p, a, cfg.autoCommit, state.projectProfile));
+	const step = makeBriefStep(p, state, `${a.sliceId}-build-brief`, buildBrief(p, a, cfg.autoCommit, state.codegraphReady, state.projectProfile));
 	return {
 		kind: "build",
 		seq: state.seq,
@@ -551,7 +551,7 @@ export function buildDirective(p: Paths, state: State, cfg: SliceFlowConfig): Di
 export function fixupDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
 	const a = sliceArtifacts(p, state);
 	const prevReview = join(p.reviews, `${a.sliceId}-r${state.fixupRound - 1}.md`);
-	const step = makeBriefStep(p, state, `${a.sliceId}-fixup-r${state.fixupRound}-brief`, fixupBrief(a, state.fixupRound, cfg.autoCommit));
+	const step = makeBriefStep(p, state, `${a.sliceId}-fixup-r${state.fixupRound}-brief`, fixupBrief(a, state.fixupRound, cfg.autoCommit, state.codegraphReady));
 	return {
 		kind: "fixup",
 		seq: state.seq,

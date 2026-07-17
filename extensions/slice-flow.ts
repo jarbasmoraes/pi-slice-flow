@@ -33,7 +33,7 @@ import { hasProjectProfile, profileStaleNudge, runInit } from "./lib/init.ts";
 import { detectCodegraph } from "./lib/codegraph.ts";
 import { detectJudgeFamilies } from "./lib/judge-family.ts";
 import { REFLECT_RUBRICS } from "./lib/directives.ts";
-import { aggregate, computeTaskMetrics, renderReport } from "./lib/metrics.ts";
+import { aggregate, computeTaskMetrics, groupByCohort, renderCohortComparison, renderReport } from "./lib/metrics.ts";
 import {
 	allocateSlug,
 	ensureGitignored,
@@ -100,7 +100,7 @@ export default function (pi: ExtensionAPI) {
 			"Actions: 'start' (requires description, unless todoist:'pick' adopts a Todoist task whose title stands in) begins a new task and returns its slug; 'next' validates the last step, runs approval gates, and returns the next directive; " +
 			"'status' reports state; 'abort' stops the task. During frame exploration only: 'research' (requires questions) fans out web researchers, " +
 			"'attack' spawns fresh adversaries against the draft framing, 'converge' compiles the decision ledger into the frame document. " +
-			"Cross-run, read-only: 'metrics' aggregates per-gate override rates, retries, and token spend across all tasks; " +
+			"Cross-run, read-only: 'metrics' aggregates per-gate override rates, retries, and token spend across all tasks, plus a per-cohort comparison table when more than one cohort exists — cohorts default to slice-flow's own released version (package.json), so each release is a comparable before/after group automatically; " +
 			"'reflect' spawns a fresh judge to propose rubric-skill edits from real human-override cases (proposals only, never auto-applied). " +
 			"Project setup: 'init' captures this repo's profile into .slice-flow/PROJECT.md (drafted by a fresh scout, human-confirmed) and finishes the check-pack manifest; run it once via /feature-init. " +
 			"Pass 'slug' to target a specific task; it is required only when more than one task is active. " +
@@ -195,7 +195,7 @@ export default function (pi: ExtensionAPI) {
 				// so folder naming stays stable.
 				const feature = todoist?.seed?.trim() || description;
 				const text = startWorkflow(p, cfg, feature, slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies, todoist ?? undefined);
-				await getTelemetry(cfg).flush();
+				await getTelemetry(cfg, ctx.cwd).flush();
 				await getTodoist(cfg, (c, a, o) => pi.exec(c, a, o)).flush();
 				// Profile affordance (UI banner, not the pure startWorkflow preamble):
 				// no profile → first-run capture tip; a captured-but-drifted profile →
@@ -216,7 +216,8 @@ export default function (pi: ExtensionAPI) {
 					const p = workPaths(ctx.cwd, cfg.workDir, t.slug);
 					return computeTaskMetrics(t.state, taskVerdictSummary(p));
 				});
-				const report = renderReport(aggregate(perTask), perTask);
+				const cohortSection = renderCohortComparison(groupByCohort(perTask));
+				const report = [renderReport(aggregate(perTask), perTask), cohortSection].filter((s) => s).join("\n\n");
 				return { content: [{ type: "text", text: report }], details: { tasks: tasks.map((t) => t.slug) } };
 			}
 
@@ -267,8 +268,8 @@ export default function (pi: ExtensionAPI) {
 				case "next": {
 					if (!state || !p) throw new Error(noTaskHint);
 					if (params.note) logEvent(state, `note: ${params.note}`);
-					const text = await nextStep(ctx, p, cfg, state, (c, a, o) => pi.exec(c, a, o));
-					await getTelemetry(cfg).flush();
+					const text = await nextStep(ctx, p, cfg, state, (c, a, o) => pi.exec(c, a, o), ctx.cwd);
+					await getTelemetry(cfg, ctx.cwd).flush();
 					await getTodoist(cfg, (c, a, o) => pi.exec(c, a, o)).flush();
 					return { content: [{ type: "text", text }], details: { phase: state.phase, slug } };
 				}
@@ -321,7 +322,7 @@ export default function (pi: ExtensionAPI) {
 			// is off). Id derives from the persisted pending directive so the close
 			// in tool_result resolves the same observation, even across a /reload.
 			if (state.pending && state.telemetry?.traceId) {
-				getTelemetry(cfg).observation({
+				getTelemetry(cfg, ctx.cwd).observation({
 					id: `${slug}:${state.pending.seq}:${state.pending.kind}`,
 					traceId: state.telemetry.traceId,
 					name: state.pending.label,
@@ -354,7 +355,7 @@ export default function (pi: ExtensionAPI) {
 			if (state.pending && state.telemetry?.traceId) {
 				const out = (event.content ?? []).map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n").slice(0, 50_000);
 				const usage = sumUsage(event.details);
-				const tel = getTelemetry(cfg);
+				const tel = getTelemetry(cfg, ctx.cwd);
 				tel.observation({
 					id: `${slug}:${state.pending.seq}:${state.pending.kind}`,
 					traceId: state.telemetry.traceId,
