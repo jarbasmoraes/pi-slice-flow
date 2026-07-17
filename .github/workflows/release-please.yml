@@ -27,24 +27,24 @@ jobs:
       # (default `if` implies the job hasn't failed yet), so a red run simply
       # leaves the PR open for a human instead of merging a broken release.
       - name: Resolve release PR branch/number
-        if: ${{ steps.release.outputs.prs_created }}
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
         id: pr
         run: |
           echo "branch=$(echo '${{ steps.release.outputs.pr }}' | jq -r '.headBranchName')" >> "$GITHUB_OUTPUT"
           echo "number=$(echo '${{ steps.release.outputs.pr }}' | jq -r '.number')" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
-        if: ${{ steps.release.outputs.prs_created }}
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
         with:
           ref: ${{ steps.pr.outputs.branch }}
 
       - uses: actions/setup-node@v4
-        if: ${{ steps.release.outputs.prs_created }}
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
         with:
           node-version: 24
 
       - name: slice-flow — install, typecheck, test
-        if: ${{ steps.release.outputs.prs_created }}
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
         working-directory: slice-flow
         run: |
           npm install
@@ -52,14 +52,14 @@ jobs:
           npm test
 
       - name: simple-flow — install, test
-        if: ${{ steps.release.outputs.prs_created }}
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
         working-directory: simple-flow
         run: |
           npm install
           npm test
 
       - name: Merge release PR
-        if: ${{ steps.release.outputs.prs_created }}
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr merge ${{ steps.pr.outputs.number }} --squash
@@ -75,7 +75,7 @@ jobs:
       # a real second run would have done — tag and publish — with no extra
       # credential to create or rotate.
       - name: Tag and publish the release now that the PR is merged
-        if: ${{ steps.release.outputs.prs_created }}
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
         uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
