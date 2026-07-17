@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.4.0...slice-flow-v0.5.0) (2026-07-17)
+
+
+### Features
+
+* **observability:** emit run attributes as Langfuse trace tags ([54530c5](https://github.com/jarbasmoraes/pi-slice-flow/commit/54530c5704019836f4d8654a4b21a436b4fb7e8c))
+
 ## [0.4.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.3.0...slice-flow-v0.4.0) (2026-07-17)
 
 
