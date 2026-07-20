@@ -51,7 +51,9 @@ import {
 	ensureWorkTree,
 	hypothesisPaths,
 	archAttackMarkerOf,
+	composeHandoff,
 	intakeMarkerOf,
+	tierMarkerOf,
 	lintArchitecture,
 	lintDecisionLegibility,
 	lintFrame,
@@ -611,7 +613,34 @@ async function onIntake(env: Env): Promise<string> {
 	const { p, state } = env;
 	if (!nonEmpty(p.intake)) return reissue(env, `The intake assessment ${p.intake} was not produced`);
 	logEvent(state, `intake: ${intakeMarkerOf(p.intake) ?? "no marker"}`);
-	return enterExplore(p, state, "Intake check complete.");
+	// Tier verdict (medium-vs-hard router). GATED means the scout judged this
+	// task contained enough for the fusion /auto-validate tier: write the
+	// files-only handoff and tell the human — the frame gate stays theirs, so
+	// this only ever recommends, never aborts on its own.
+	const tier = tierMarkerOf(p.intake) ?? "FULL";
+	logEvent(state, `tier: ${tier}`);
+	let preamble = "Intake check complete.";
+	if (tier === "GATED") {
+		const handoff = join(p.frameDir, "HANDOFF.md");
+		writeFileSync(
+			handoff,
+			composeHandoff({
+				feature: state.feature,
+				intakeText: readFileSync(p.intake, "utf8"),
+				cwd: env.cwd ?? process.cwd(),
+				slug: state.slug,
+				when: new Date().toISOString(),
+			}),
+		);
+		logEvent(state, `tier handoff written: ${handoff}`);
+		preamble = [
+			"Intake check complete. **TIER: GATED** — the intake scout rates this task",
+			`contained enough for the gated tier (fusion /auto-validate); a handoff brief is at ${handoff}.`,
+			"Tell the user before exploring: they can abort this workflow and run the gated",
+			"tier with that handoff, or continue here if they disagree with the rating.",
+		].join(" ");
+	}
+	return enterExplore(p, state, preamble);
 }
 
 async function onResearch(env: Env): Promise<string> {

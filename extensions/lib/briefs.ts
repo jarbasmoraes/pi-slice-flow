@@ -95,8 +95,12 @@ You are the intake classifier for a feature workflow. The description above is t
    - **Users** — is it clear who or what consumes the change?
    - **Constraints** — are known constraints stated (compatibility, performance, scope)?
    - **Definition of done** — is there anything testable to verify against?
-3. Your final answer is saved automatically to ${p.intake}. Its very first line MUST be exactly "INTAKE: SUFFICIENT" or "INTAKE: QUESTIONS" — nothing before it. Then:
+3. Rate the task's tier. The second line of your answer MUST be exactly "TIER: GATED" or "TIER: FULL":
+   - **GATED** — ALL of: one module/small blast radius; expected diff under ~400 LOC; success is machine-verifiable (a script could accept/reject it); no auth/payments/data-migration/security surface; the description is unambiguous about the outcome. Such tasks run better under a cheap gate-first loop than this full workflow.
+   - **FULL** — anything else: architectural reach, ambiguity worth exploring with the human, risk that needs judges and staged gates.
+4. Your final answer is saved automatically to ${p.intake}. Its very first line MUST be exactly "INTAKE: SUFFICIENT" or "INTAKE: QUESTIONS" — nothing before it; the second line the TIER marker. Then:
    - **Summary** — your reading of the request in 2-4 single-sentence bullets.
+   - **Tier** — one sentence on why you rated GATED or FULL.
    - **Checklist** — one line per checklist item: met or not met, and why.
    - **Questions** — only when the marker is QUESTIONS: a numbered batch of specific questions, each answerable in one sentence. Never more than 6.
 

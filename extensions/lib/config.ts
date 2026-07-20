@@ -213,8 +213,13 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	// Anthropic tiers first, then the hosted gpt-5.x families (mini variants
 	// before their prefix so substring matching resolves them correctly), then
 	// local ollama models (qwen*/gemma*) whose marginal $/token is ~free.
+	// fable (Mythos tier, above opus) and gpt-5.6 (sol/terra/luna) are the
+	// current two-subscription OAuth roster — weigh them or the cost ceiling
+	// silently treats frontier spawns as `default`-cheap.
 	modelWeights: {
+		fable: 1.25,
 		opus: 1,
+		"gpt-5.6": 0.5,
 		"gpt-5.5": 0.5,
 		sonnet: 0.25,
 		"gpt-5.4-mini": 0.06,

@@ -446,6 +446,53 @@ export function intakeMarkerOf(file: string): "SUFFICIENT" | "QUESTIONS" | null 
 	return match ? (match[1].toUpperCase() as "SUFFICIENT" | "QUESTIONS") : null;
 }
 
+/** First `TIER: GATED|FULL` marker in the intake file; null when absent (older
+ * intakes, or a scout that skipped the verdict — treated as FULL downstream). */
+export function tierMarkerOf(file: string): "GATED" | "FULL" | null {
+	if (!existsSync(file)) return null;
+	const match = readFileSync(file, "utf8").match(/TIER:\s*(GATED|FULL)/i);
+	return match ? (match[1].toUpperCase() as "GATED" | "FULL") : null;
+}
+
+/** The de-escalation handoff written when intake rates a task GATED: everything
+ * the gated tier (fusion-harness /auto-validate) needs to take the task over,
+ * composed purely so tests can pin its contract. The coupling between tiers is
+ * files-only — this document IS the interface. */
+export function composeHandoff(e: { feature: string; intakeText: string; cwd: string; slug: string; when: string }): string {
+	return [
+		"# HANDOFF — intake rated this task GATED (medium tier)",
+		"",
+		`- when: ${e.when}`,
+		`- project: ${e.cwd}`,
+		`- slice-flow task: ${e.slug} (aborting it is fine — this file survives)`,
+		"",
+		"The intake scout judged this task contained enough for the gated tier:",
+		"machine-verifiable, small blast radius, no full FRAME needed. Running the",
+		"whole six-phase workflow on it would spend strong-model quota on ceremony.",
+		"",
+		"## Task (verbatim)",
+		"",
+		e.feature.trim(),
+		"",
+		"## Intake assessment",
+		"",
+		e.intakeText.trim(),
+		"",
+		"## How to run the gated tier",
+		"",
+		"```bash",
+		"cd " + e.cwd,
+		"just -f <pi-fusion-harness>/justfile fh-workhorse   # or fh-sota for hard-but-contained",
+		"```",
+		"",
+		'Then: `/auto-validate <the task above>` — the VALIDATOR writes the acceptance',
+		"gate first, the builder iterates until it passes, and a halt writes",
+		"`.fusion/escalation.md`, which `/feature-escalate` turns back into a full",
+		"slice-flow run. No work is lost in either direction.",
+		"",
+	].join("\n");
+}
+
 // --- Frame lint: deterministic structure checks before any human or judge ----
 
 export const FRAME_REQUIRED_SECTIONS = [

@@ -57,7 +57,9 @@ export const JUDGE_FAMILY_REGISTRY: Array<{ family: string; model: string; cheap
 	// re-checks run in parallel and the loop is bounded to a few iterations. The
 	// deterministic check-pack remains the non-model security backstop.
 	{ family: "qwen", model: "ollama/qwen3.6-coder:latest", tiers: ["cheap"] },
-	{ family: "gpt", model: "openai-codex/gpt-5.5", cheapModel: "openai-codex/gpt-5.4-mini" },
+	// gpt-5.6-sol is the current codex frontier (5.5's successor); terra is the
+	// same-generation workhorse tier — both ride the ChatGPT-subscription OAuth.
+	{ family: "gpt", model: "openai-codex/gpt-5.6-sol", cheapModel: "openai-codex/gpt-5.6-terra" },
 ];
 
 export interface JudgeResolution {

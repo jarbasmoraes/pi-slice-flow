@@ -7,7 +7,7 @@ import { modelFamily, resolveJudge, detectJudgeFamilies, positionSwap } from "..
 
 test("modelFamily extracts coarse families; null defaults to claude (builder default)", () => {
 	assert.equal(modelFamily("anthropic/claude-opus-4-8"), "claude");
-	assert.equal(modelFamily("openai-codex/gpt-5.5"), "gpt");
+	assert.equal(modelFamily("openai-codex/gpt-5.6-sol"), "gpt");
 	assert.equal(modelFamily("google-gemini/gemini-2.5-pro"), "gemini");
 	assert.equal(modelFamily("ollama/qwen2.5"), "qwen");
 	assert.equal(modelFamily(null), "claude");
@@ -16,7 +16,7 @@ test("modelFamily extracts coarse families; null defaults to claude (builder def
 // --- resolveJudge -------------------------------------------------------------
 
 const CLAUDE = "anthropic/claude-opus-4-8";
-const GPT = "openai-codex/gpt-5.5";
+const GPT = "openai-codex/gpt-5.6-sol";
 
 test("cross mode routes a same-family judge to an available other family", () => {
 	const r = resolveJudge(CLAUDE, null /* claude builder */, new Set(["claude", "gpt"]), "cross");
@@ -50,15 +50,15 @@ test("same mode never reroutes, but still reports whether it happens to be cross
 
 test("cheap tier routes to the family's cheapModel; strong keeps the flagship", () => {
 	const strong = resolveJudge(CLAUDE, null, new Set(["claude", "gpt"]), "cross", "strong");
-	assert.equal(strong.model, "openai-codex/gpt-5.5");
+	assert.equal(strong.model, "openai-codex/gpt-5.6-sol");
 	const cheap = resolveJudge(CLAUDE, null, new Set(["claude", "gpt"]), "cross", "cheap");
-	assert.equal(cheap.model, "openai-codex/gpt-5.4-mini");
+	assert.equal(cheap.model, "openai-codex/gpt-5.6-terra");
 	assert.equal(cheap.crossed, true);
 });
 
 test("tier defaults to strong when omitted", () => {
 	const r = resolveJudge(CLAUDE, null, new Set(["claude", "gpt"]), "cross");
-	assert.equal(r.model, "openai-codex/gpt-5.5");
+	assert.equal(r.model, "openai-codex/gpt-5.6-sol");
 });
 
 test("cheap tier prefers the free local family when available; strong is never handed to it", () => {
@@ -66,7 +66,7 @@ test("cheap tier prefers the free local family when available; strong is never h
 	const cheap = resolveJudge(CLAUDE, null, fams, "cross", "cheap");
 	assert.equal(cheap.model, "ollama/qwen3.6-coder:latest", "cheap routes to the local family first");
 	const strong = resolveJudge(CLAUDE, null, fams, "cross", "strong");
-	assert.equal(strong.model, "openai-codex/gpt-5.5", "strong skips the cheap-only family");
+	assert.equal(strong.model, "openai-codex/gpt-5.6-sol", "strong skips the cheap-only family");
 });
 
 test("a cheap-only family alone cannot take strong judging: degrade + caveat", () => {
@@ -96,7 +96,7 @@ test("a non-Claude builder flips which family is 'self'", () => {
 test("detectJudgeFamilies always includes claude and adds families whose route model is runnable", async () => {
 	const fams = await detectJudgeFamilies([
 		{ provider: "anthropic", id: "claude-opus-4-8" },
-		{ provider: "openai-codex", id: "gpt-5.5" },
+		{ provider: "openai-codex", id: "gpt-5.6-sol" },
 	]);
 	assert.ok(fams.includes("claude"));
 	assert.ok(fams.includes("gpt"));
@@ -115,7 +115,7 @@ test("an available model that is not a registry route model does not enable its 
 
 test("a local (http) family needs its endpoint to answer the probe; hosted families do not", async () => {
 	const models = [
-		{ provider: "openai-codex", id: "gpt-5.5", baseUrl: "https://chatgpt.com/backend-api" },
+		{ provider: "openai-codex", id: "gpt-5.6-sol", baseUrl: "https://chatgpt.com/backend-api" },
 		{ provider: "ollama", id: "qwen3.6-coder:latest", baseUrl: "http://jarbass-macbook-pro.local:11434/v1" },
 	];
 	const up = await detectJudgeFamilies(models, async () => true);

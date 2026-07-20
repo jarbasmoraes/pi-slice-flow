@@ -93,8 +93,8 @@ test("regression re-checks cross-route at the cheap tier; failed dims at the str
 	const group = d.args.chain.at(-1).parallel;
 	const regression = group.find((t) => /Regression-check/.test(t.label));
 	const failed = group.find((t) => /Re-verify security/.test(t.label));
-	assert.equal(regression.model, "openai-codex/gpt-5.4-mini", "cheap tier is preserved across the family boundary");
-	assert.equal(failed.model, "openai-codex/gpt-5.5", "dims under repair keep the strong tier");
+	assert.equal(regression.model, "openai-codex/gpt-5.6-terra", "cheap tier is preserved across the family boundary");
+	assert.equal(failed.model, "openai-codex/gpt-5.6-sol", "dims under repair keep the strong tier");
 });
 
 test("with a live local family, regression re-checks go local while strong stays hosted", () => {
@@ -106,7 +106,7 @@ test("with a live local family, regression re-checks go local while strong stays
 	const d = loopDirective(p, state, { ...DEFAULT_CONFIG, reverifyAllInLoop: true });
 	const group = d.args.chain.at(-1).parallel;
 	assert.equal(group.find((t) => /Regression-check/.test(t.label)).model, "ollama/qwen3.6-coder:latest");
-	assert.equal(group.find((t) => /Re-verify security/.test(t.label)).model, "openai-codex/gpt-5.5");
+	assert.equal(group.find((t) => /Re-verify security/.test(t.label)).model, "openai-codex/gpt-5.6-sol");
 });
 
 // --- comparative judges position-swap -------------------------------------------
