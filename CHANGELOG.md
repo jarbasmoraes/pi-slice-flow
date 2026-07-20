@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.5.0...slice-flow-v0.6.0) (2026-07-20)
+
+
+### Features
+
+* **tiers:** FRAME intake tier verdict, GATED handoff, /feature-escalate, OAuth-roster model fix ([1c71620](https://github.com/jarbasmoraes/pi-slice-flow/commit/1c7162017c74621ed53c072e19d2da3f691ef11a))
+
 ## [0.5.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.4.0...slice-flow-v0.5.0) (2026-07-17)
 
 
