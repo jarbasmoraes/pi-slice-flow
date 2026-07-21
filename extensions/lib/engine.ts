@@ -1426,7 +1426,7 @@ export function startWorkflow(
 	// When cross-family judging is wanted but only the host family is present,
 	// record that the bias is mitigated by position-swap alone.
 	const at0 = (s: SliceFlowConfig["models"]["verify"]) => (Array.isArray(s) ? (s[0] ?? null) : s);
-	const judgeCaveat = resolveJudge(at0(tcfg.models.verify), at0(tcfg.models.build), new Set(judgeFamilies), cfg.judgeFamily ?? "cross").caveat;
+	const judgeCaveat = resolveJudge(at0(tcfg.models.verify), at0(tcfg.models.build), new Set(judgeFamilies), tcfg.judgeFamily ?? "cross").caveat;
 	if (judgeCaveat) logEvent(state, `judge family: ${judgeCaveat}`);
 	logEvent(state, `tier: ${tier}`, "lifecycle");
 	return issue(

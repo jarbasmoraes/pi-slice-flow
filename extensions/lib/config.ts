@@ -22,6 +22,17 @@ export type ModelSpec = string | string[] | null;
  * models across the pipeline. See `modelTiers` / `applyTier`. */
 export type Tier = "easy" | "medium" | "hard";
 
+/** Provider routing policy. Single-provider modes replace every phase model —
+ * including normally inherited build/review models — with explicit models.
+ * `mixed` preserves the model-vs-model attack panel and cross-family judges. */
+export type ModelMode = "anthropic" | "gpt" | "mixed";
+
+export const MODEL_MODES: readonly ModelMode[] = ["anthropic", "gpt", "mixed"] as const;
+
+export function isModelMode(value: string): value is ModelMode {
+	return (MODEL_MODES as readonly string[]).includes(value);
+}
+
 export interface SliceFlowModels {
 	intake: ModelSpec;
 	research: ModelSpec;
@@ -173,6 +184,9 @@ export interface SliceFlowConfig {
 	 * Pure visibility — the profile is never auto-edited. `staleAfterCommits` is
 	 * best-effort (skipped on a non-git repo). */
 	profile: { staleAfterDays: number; staleAfterCommits: number };
+	/** Provider routing policy. `anthropic` and `gpt` explicitly pin every
+	 * phase to that provider; `mixed` preserves model-vs-model routing. */
+	modelMode: ModelMode;
 	/** Self-preference mitigation for the model judges. slice-flow is
 	 * Claude-judging-Claude, and Claude over-rates its own family's output;
 	 * `"cross"` (default) routes a judge to a *different* available model family
@@ -277,6 +291,9 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	// available (probed at start), to dodge Claude's confirmed self-preference
 	// bias; degrades to the configured judge + caveat + position-swap otherwise.
 	judgeFamily: "cross",
+	// Preserve mixed-model routing unless a project explicitly selects a single
+	// provider. Provider modes are applied in applyTier after capability tiers.
+	modelMode: "mixed",
 	// Off by default; a project opts in via slice-flow.json once Composio/Todoist
 	// are set up. See lib/todoist.ts for the fail-soft client.
 	todoist: { enabled: false },
@@ -437,14 +454,63 @@ function mergeModelTiers(base: Record<Tier, Partial<SliceFlowModels>>, overlay?:
 	return out;
 }
 
+/** Explicit provider models. Every role is named rather than inheriting an
+ * agent or session default, making the single-provider modes a hard guarantee. */
+function providerOnlyModels(model: string): SliceFlowModels {
+	return {
+		intake: model,
+		research: model,
+		attack: model,
+		fusion: model,
+		compile: model,
+		frameJudge: model,
+		hypothesis: model,
+		architectJudge: model,
+		prototype: model,
+		prototypeJudge: model,
+		plan: model,
+		planJudge: model,
+		build: model,
+		review: model,
+		fixup: model,
+		verify: model,
+		verifyRegression: model,
+	};
+}
+
+const PROVIDER_ONLY_MODELS: Record<Exclude<ModelMode, "mixed">, Record<Tier, SliceFlowModels>> = {
+	anthropic: {
+		easy: providerOnlyModels("anthropic/claude-haiku-4-5"),
+		medium: providerOnlyModels("anthropic/claude-sonnet-5"),
+		hard: providerOnlyModels("anthropic/claude-fable-5"),
+	},
+	gpt: {
+		easy: providerOnlyModels("openai-codex/gpt-5.6-luna"),
+		medium: providerOnlyModels("openai-codex/gpt-5.6-terra"),
+		hard: providerOnlyModels("openai-codex/gpt-5.6-sol"),
+	},
+};
+
 /** Layer a task's tier onto its config: the tier's model overrides win over the
- * baseline `models`. Roles a tier omits (and the empty `medium` tier) inherit
- * `models` unchanged. Unknown/absent tiers return `cfg` untouched (fail-soft).
- * Every other config field is preserved, so this is safe to apply per task. */
+ * baseline `models`. Single-provider modes then replace every role and disable
+ * family crossing. Absent tiers use `defaultTier`, preserving the guarantee for
+ * tasks created before tiers existed. */
 export function applyTier(cfg: SliceFlowConfig, tier: Tier | undefined): SliceFlowConfig {
-	const preset = tier ? cfg.modelTiers[tier] : undefined;
-	if (!preset) return cfg;
-	return { ...cfg, models: { ...cfg.models, ...preset } };
+	const selectedTier = tier ?? cfg.defaultTier;
+	const preset = cfg.modelTiers[selectedTier];
+	// Accept the previous names while users migrate their JSON config; invalid
+	// values fail safely to the established mixed routing.
+	const configuredMode: string = cfg.modelMode;
+	const mode = configuredMode === "gpt-only" ? "gpt" : configuredMode === "all" ? "mixed" : configuredMode;
+	const providerModels = isModelMode(mode) && mode !== "mixed" ? PROVIDER_ONLY_MODELS[mode][selectedTier] : undefined;
+	const resolvedMode = isModelMode(mode) ? mode : "mixed";
+	const models = { ...cfg.models, ...preset, ...providerModels };
+	return {
+		...cfg,
+		modelMode: resolvedMode,
+		models,
+		judgeFamily: resolvedMode === "mixed" ? cfg.judgeFamily : "same",
+	};
 }
 
 /**

@@ -58,6 +58,29 @@ test("applyTier does not mutate the input config", () => {
 	assert.equal(JSON.stringify(DEFAULT_CONFIG.models), before);
 });
 
+test("single-provider modes pin every phase and disable cross-provider routing", () => {
+	for (const [modelMode, provider, models] of [
+		["anthropic", "anthropic", ["claude-haiku-4-5", "claude-sonnet-5", "claude-fable-5"]],
+		["gpt", "openai-codex", ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]],
+	]) {
+		const cfg = { ...DEFAULT_CONFIG, modelMode };
+		for (const [tier, expected] of [["easy", models[0]], ["medium", models[1]], ["hard", models[2]]]) {
+			const resolved = applyTier(cfg, tier);
+			assert.equal(resolved.judgeFamily, "same");
+			for (const [role, spec] of Object.entries(resolved.models)) {
+				const ids = Array.isArray(spec) ? spec : [spec];
+				for (const id of ids) assert.equal(id, `${provider}/${expected}`, `${modelMode}.${tier}.${role} must stay on one provider`);
+			}
+		}
+	}
+});
+
+test("mixed mode preserves the model-vs-model defaults", () => {
+	const resolved = applyTier({ ...DEFAULT_CONFIG, modelMode: "mixed" }, "hard");
+	assert.equal(resolved.judgeFamily, "cross");
+	assert.deepEqual(resolved.models.attack, ["anthropic/claude-fable-5", "openai-codex/gpt-5.6-sol"]);
+});
+
 // --- config wiring ------------------------------------------------------------
 
 test("defaultTier is 'medium' and all three tier presets exist", () => {

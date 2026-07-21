@@ -24,13 +24,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { applyTier, DEFAULT_CONFIG, loadConfig } from "./lib/config.ts";
+import { applyTier, DEFAULT_CONFIG, isModelMode, loadConfig, MODEL_MODES } from "./lib/config.ts";
 import { getTelemetry } from "./lib/telemetry.ts";
 import { getTodoist } from "./lib/todoist.ts";
 import type { SliceFlowConfig } from "./lib/config.ts";
 import { converge, nextStep, provisionCheckPack, setupTodoistStart, setupWorktree, startAttack, startReflect, startResearch, startWorkflow, stopped, syncBundledAgents } from "./lib/engine.ts";
 import { hasProjectProfile, profileStaleNudge, runInit } from "./lib/init.ts";
 import { detectCodegraph } from "./lib/codegraph.ts";
+import { setProjectModelMode } from "./lib/model-mode.ts";
 import { detectJudgeFamilies } from "./lib/judge-family.ts";
 import { REFLECT_RUBRICS } from "./lib/directives.ts";
 import { aggregate, computeTaskMetrics, groupByCohort, renderCohortComparison, renderReport } from "./lib/metrics.ts";
@@ -179,7 +180,14 @@ export default function (pi: ExtensionAPI) {
 						return res.ok;
 					});
 				} catch {
+					if (cfg.modelMode === "gpt") throw new Error("modelMode gpt requires an available OpenAI Codex GPT model.");
 					judgeFamilies = ["claude"];
+				}
+				if (cfg.modelMode === "gpt") {
+					if (!judgeFamilies.includes("gpt")) throw new Error("modelMode gpt requires an available OpenAI Codex GPT model.");
+					// Never present Claude as a possible cross-family route: all workflow
+					// phases are explicit GPT models in this mode.
+					judgeFamilies = ["gpt"];
 				}
 				if (cfg.gitignoreWorkDir && baseline !== null) ensureGitignored(ctx.cwd, cfg.workDir);
 				const slug = allocateSlug(ctx.cwd, cfg.workDir, description);
@@ -392,6 +400,35 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// --- Slash commands --------------------------------------------------------
+	pi.registerCommand("feature-model", {
+		description: "Show or set the slice-flow provider mode: anthropic, gpt, or mixed (model-vs-model)",
+		getArgumentCompletions: (prefix) => {
+			const matches = MODEL_MODES.filter((mode) => mode.startsWith(prefix.toLowerCase()));
+			return matches.length ? matches.map((mode) => ({ value: mode, label: mode })) : null;
+		},
+		handler: async (args, ctx) => {
+			const requested = args.trim().toLowerCase();
+			const current = loadConfig(ctx.cwd).modelMode;
+			let modelMode: typeof current;
+			if (requested) {
+				if (!isModelMode(requested)) {
+					ctx.ui.notify(`Unknown model mode "${requested}". Choose: ${MODEL_MODES.join(", ")}.`, "warning");
+					return;
+				}
+				modelMode = requested;
+			} else if (ctx.hasUI) {
+				const selected = await ctx.ui.select(`Slice-flow model mode (current: ${current})`, [...MODEL_MODES]);
+				if (!selected || !isModelMode(selected)) return;
+				modelMode = selected;
+			} else {
+				ctx.ui.notify(`Current slice-flow model mode: ${current}. Use /feature-model <${MODEL_MODES.join("|")}> to change it.`, "info");
+				return;
+			}
+			const path = setProjectModelMode(ctx.cwd, modelMode);
+			ctx.ui.notify(`Slice-flow model mode: ${modelMode} (${path}).`, "info");
+		},
+	});
+
 	pi.registerCommand("feature-status", {
 		description: "Show slice-flow tasks and their phase; copy a task's exact name to target it (optionally: /feature-status <name>)",
 		handler: async (args, ctx) => {

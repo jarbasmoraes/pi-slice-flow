@@ -308,6 +308,7 @@ the session's default model.
   "telemetry": { "enabled": false, "flushOnPause": true, "debug": false },
   "checks": { "enabled": true, "mode": "warn", "oracles": ["secrets", "sast", "deps"], "generate": true, "maxGenRetries": 2 },
   "judgeFamily": "cross",
+  "modelMode": "mixed",
   "autonomy": {
     "frame": "human",
     "architect": "human",
@@ -369,6 +370,20 @@ Notes:
   check-slice, and any authored check is admitted only if it goes **RED on a
   planted-violation fixture and GREEN on the clean tree** (`validateCheck`), else it
   is quarantined as a warning.
+- `modelMode` controls provider routing. Use `/feature-model` to choose it
+  interactively, or `/feature-model anthropic`, `/feature-model gpt`, or
+  `/feature-model mixed` to persist the project setting in `slice-flow.json`.
+  - `anthropic` pins **every** phase, including normally inherited
+    build/review/fix-up phases, to Claude (Haiku/Sonnet/Fable for
+    easy/medium/hard).
+  - `gpt` pins every phase to OpenAI Codex GPT (Luna/Terra/Sol for
+    easy/medium/hard) and fails start clearly if GPT is not configured.
+  - `mixed` is the default: attacks fan out Claude versus GPT and judges route
+    across families when possible.
+
+  ```json
+  { "modelMode": "gpt" }
+  ```
 - `judgeFamily` mitigates Claude's confirmed **self-preference bias** (Claude
   over-rates its own family's output, and slice-flow is Claude-judging-Claude end to
   end). `"cross"` (default) asks pi's model registry at start for an authenticated
