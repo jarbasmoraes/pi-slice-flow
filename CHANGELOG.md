@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.6.0...slice-flow-v0.7.0) (2026-07-21)
+
+
+### Features
+
+* **feature:** accept optional easy|medium|hard tier prefix in /feature command ([17a3ac9](https://github.com/jarbasmoraes/pi-slice-flow/commit/17a3ac98cc8857af2af31c0fd8d65b7ee13be42d))
+
 ## [0.6.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.5.0...slice-flow-v0.6.0) (2026-07-21)
 
 
