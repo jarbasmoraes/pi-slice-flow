@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.7.0...slice-flow-v0.8.0) (2026-07-21)
+
+
+### Features
+
+* **models:** add provider mode switch ([2e1e3bf](https://github.com/jarbasmoraes/pi-slice-flow/commit/2e1e3bf8101d446b6cfd1821a8dd10154d95db39))
+
 ## [0.7.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.6.0...slice-flow-v0.7.0) (2026-07-21)
 
 
