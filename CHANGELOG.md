@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.5.0...slice-flow-v0.6.0) (2026-07-21)
+
+
+### Features
+
+* **frame:** add per-task model tiers and cross-family attack fusion ([d9a84a4](https://github.com/jarbasmoraes/pi-slice-flow/commit/d9a84a44c0558c3feaba15a1adfbc4caabfe3356))
+
 ## [0.5.0](https://github.com/jarbasmoraes/pi-slice-flow/compare/slice-flow-v0.4.0...slice-flow-v0.5.0) (2026-07-17)
 
 
