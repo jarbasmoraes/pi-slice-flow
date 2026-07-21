@@ -23,6 +23,7 @@ import {
 	archDispositionBrief,
 	architectJudgeBrief,
 	attackBrief,
+	attackFusionBrief,
 	buildBrief,
 	compileBrief,
 	fixupBrief,
@@ -42,7 +43,7 @@ import {
 } from "./briefs.ts";
 import { VERIFY_DIMENSIONS, hypothesisPaths, logEvent, nextSeqIn, pad3, planCandidateDir, priorMemoPaths, sliceArtifacts, slugify } from "./workspace.ts";
 import type { Directive, Paths, ReflectPaths, State, VerifyDimension } from "./workspace.ts";
-import { type JudgeTier, positionSwap, resolveJudge } from "./judge-family.ts";
+import { type JudgeTier, modelFamily, positionSwap, resolveJudge } from "./judge-family.ts";
 
 // --- Worktree isolation --------------------------------------------------------
 
@@ -83,6 +84,19 @@ function modelAt(spec: string | string[] | null, i = 0): string | null {
 function withModel(spec: string | string[] | null, i = 0): { model?: string } {
 	const model = modelAt(spec, i);
 	return model ? { model } : {};
+}
+
+/** Filter a cross-family attack spec to the model families that actually have
+ * provider auth at start (`state.judgeFamilies`, always incl. "claude"). Keeps a
+ * `[claude, gpt]` panel genuinely model-vs-model when GPT is available, and
+ * collapses to Claude-only — never a dead model id — when it is not. Non-array
+ * specs pass through unchanged; an empty result falls back to the first entry so
+ * the panel always has at least one runnable model. */
+function crossFamilyAttack(spec: string | string[] | null, availableFamilies: Set<string>): string | string[] | null {
+	if (!Array.isArray(spec)) return spec;
+	const kept = spec.filter((id) => availableFamilies.has(modelFamily(id)));
+	if (kept.length === 0) return spec[0] ?? null;
+	return kept.length === 1 ? kept[0] : kept;
 }
 
 /** Like `withModel`, but for a JUDGE step: routes the model to a different family
@@ -185,6 +199,9 @@ export function researchDirective(p: Paths, state: State, cfg: SliceFlowConfig, 
 
 export function attackDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
 	let seq = nextSeqIn(p.frameAttacks);
+	// Cross-family panel: spread charters across the model families available at
+	// start (model-vs-model), degrading to Claude-only when GPT auth is absent.
+	const attackSpec = crossFamilyAttack(cfg.models.attack, new Set(state.judgeFamilies ?? ["claude"]));
 	const tasks = ATTACK_CHARTERS.slice(0, cfg.attackCount).map((charter, i) => {
 		const outPath = join(p.frameAttacks, `${pad3(seq)}-${charter.id}.md`);
 		seq += 1;
@@ -195,15 +212,31 @@ export function attackDirective(p: Paths, state: State, cfg: SliceFlowConfig): D
 			label: `Attack: ${charter.id}`,
 			reads: [step.briefPath, p.ledger, p.intake],
 			output: outPath,
-			...withModel(cfg.models.attack, i),
+			...withModel(attackSpec, i),
 		};
 	});
+	const attackPaths = tasks.map((t) => t.output);
+	// Fusion step: a fresh consolidator reads every report and emits one
+	// consensus/divergence/discarded ledger. Routed cross-family (judgeModel) so a
+	// Claude-majority panel is not consolidated by Claude.
+	const fusionStep = makeBriefStep(p, state, "attack-fusion-brief", attackFusionBrief(p, state.feature));
 	return {
 		kind: "attack",
 		seq: state.seq,
-		label: `Phase 1 — FRAME: adversarial attack (${tasks.length} charters)`,
-		expects: tasks.map((t) => t.output),
-		args: freshParallel(tasks),
+		label: `Phase 1 — FRAME: adversarial attack (${tasks.length} charters) + fusion`,
+		expects: [...attackPaths, p.frameAttackFusion],
+		args: freshChain(p, state.seq, "attack", [
+			{ parallel: tasks, concurrency: tasks.length },
+			{
+				agent: cfg.agents.fusion,
+				task: fusionStep.task,
+				label: "Fuse attack panel",
+				phase: "Frame",
+				reads: [fusionStep.briefPath, p.ledger, p.intake, ...attackPaths],
+				output: p.frameAttackFusion,
+				...judgeModel(cfg, state, cfg.models.fusion),
+			},
+		]),
 	};
 }
 
@@ -324,6 +357,9 @@ export function architectJudgeDirective(p: Paths, state: State, cfg: SliceFlowCo
  * objection and emits the ARCH-ATTACK marker. Runs once before the gate. */
 export function archAttackDirective(p: Paths, state: State, cfg: SliceFlowConfig): Directive {
 	let seq = nextSeqIn(p.archAttacks);
+	// Same cross-family panel as the frame attack: spread across available model
+	// families, degrading to Claude-only when GPT auth is absent.
+	const attackSpec = crossFamilyAttack(cfg.models.attack, new Set(state.judgeFamilies ?? ["claude"]));
 	const tasks = ARCH_ATTACK_CHARTERS.slice(0, cfg.attackCount).map((charter, i) => {
 		const outPath = join(p.archAttacks, `${pad3(seq)}-${charter.id}.md`);
 		seq += 1;
@@ -336,7 +372,7 @@ export function archAttackDirective(p: Paths, state: State, cfg: SliceFlowConfig
 			skill: "architecture-attack",
 			reads: [step.briefPath, p.frame, p.architecture],
 			output: outPath,
-			...withModel(cfg.models.attack, i),
+			...withModel(attackSpec, i),
 		};
 	});
 	const attackPaths = tasks.map((t) => t.output);

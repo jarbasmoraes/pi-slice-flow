@@ -29,7 +29,7 @@ test("the start action passes `feature` (not params.description.trim()) into sta
 	const start = sliceFlowText.indexOf('if (params.action === "start")');
 	const next = sliceFlowText.indexOf('if (params.action === "metrics")');
 	const body = sliceFlowText.slice(start, next);
-	assert.match(body, /startWorkflow\(p, cfg, feature, slug, baseline, ctx\.cwd, codegraphState, isolation, judgeFamilies, todoist \?\? undefined\)/);
+	assert.match(body, /startWorkflow\(p, cfg, feature, slug, baseline, ctx\.cwd, codegraphState, isolation, judgeFamilies, todoist \?\? undefined, tier\)/);
 });
 
 test("slug allocation still uses the raw description (or adopted title), independent of the seed", () => {

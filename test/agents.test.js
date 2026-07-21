@@ -20,7 +20,7 @@ const tmpProjectDir = mkdtempSync(join(tmpdir(), "slice-flow-agents-test-"));
 syncBundledAgents(tmpProjectDir, bundleDir);
 const discoveredDir = join(tmpProjectDir, ".pi", "agents");
 
-const roles = ["scout", "researcher", "builder", "oracle-adversary", "oracle-judge", "planner", "reviewer"];
+const roles = ["scout", "researcher", "builder", "oracle-adversary", "oracle-fusion", "oracle-judge", "planner", "reviewer"];
 
 function frontmatter(text) {
   const lines = text.split("\n");
@@ -114,7 +114,7 @@ test("DEFAULT_CONFIG agents map points only at namespaced agents", () => {
   // lives at ~/.pi/slice-flow.json or a project-local slice-flow.json — both
   // user-specific and absent on CI, so the repo validates the defaults.)
   const cfg = DEFAULT_CONFIG;
-  const pattern = /^slice-flow-(scout|researcher|builder|oracle-adversary|oracle-judge|planner|reviewer)$/;
+  const pattern = /^slice-flow-(scout|researcher|builder|oracle-adversary|oracle-fusion|oracle-judge|planner|reviewer)$/;
   for (const [phase, value] of Object.entries(cfg.agents)) {
     assert.match(value, pattern, `agent for phase ${phase} is not namespaced: ${value}`);
   }

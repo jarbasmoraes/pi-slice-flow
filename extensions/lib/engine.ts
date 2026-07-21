@@ -9,7 +9,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { GateName, SliceFlowConfig } from "./config.ts";
+import { applyTier } from "./config.ts";
+import type { GateName, SliceFlowConfig, Tier } from "./config.ts";
 import { getTelemetry } from "./telemetry.ts";
 import { BOARD_SECTIONS, PHASE_SECTION, getTodoist } from "./todoist.ts";
 import {
@@ -633,19 +634,19 @@ async function onResearch(env: Env): Promise<string> {
 }
 
 async function onAttack(env: Env): Promise<string> {
-	const { p, state, pending } = env;
+	const { p, state } = env;
 	const missing = missingExpected(env);
-	if (missing.length > 0) return reissue(env, `Attack report missing: ${missing.join(", ")}`);
-	const files = pending.expects ?? [];
-	logEvent(state, `attack complete: ${files.length} report(s)`);
+	if (missing.length > 0) return reissue(env, `Attack panel output missing: ${missing.join(", ")}`);
+	logEvent(state, "attack + fusion complete");
 	return enterExplore(
 		p,
 		state,
 		[
-			"Adversarial attack complete. Reports:",
-			...files.map((f) => `- ${f}`),
+			"Adversarial attack + fusion complete. A cross-family panel attacked the framing and a fusion agent consolidated the objections.",
+			`- Consolidated view (read this first): ${p.frameAttackFusion}`,
+			`- Raw per-adversary reports: ${p.frameAttacks}/`,
 			"",
-			"Read each report now and walk the user through the objections. For each: resolve it, accept it as a scope change, or reject it with a reason — and record the outcome in the ledger. Then continue exploring.",
+			"Read the fusion doc now. Walk the user through the CONSENSUS objections first (highest signal — multiple families independently agreed), then the DIVERGENCE objections (single-family insights). For each: resolve it, accept it as a scope change, or reject it with a reason — and record the outcome in the ledger. The DISCARDED list is fusion's judgment; skim it and reinstate any objection you disagree with. Then continue exploring.",
 		].join("\n"),
 	);
 }
@@ -1383,11 +1384,17 @@ export function startWorkflow(
 	isolation?: { worktree?: WorktreeInfo },
 	judgeFamilies: string[] = ["claude"],
 	todoist?: { taskId: string; project: string; sectionMode: "sections" | "comment-only" },
+	tier: Tier = "medium",
 ): string {
 	syncBundledAgents(cwd);
 	preflightAgents(cwd, cfg);
 	ensureWorkTree(p);
+	// Apply the chosen capability tier to the models for THIS task before any
+	// directive is built. Persisted on state so every later action (openTask)
+	// re-derives the same tiered config.
+	const tcfg = applyTier(cfg, tier);
 	const state = createState(feature, slug, baselineCommit, isolation);
+	state.tier = tier;
 	if (todoist) state.todoist = { ...todoist, attachedFrame: false, attachedArch: false };
 	state.codegraphReady = codegraphState === "ready";
 	state.cohort = cfg.cohort;
@@ -1419,13 +1426,14 @@ export function startWorkflow(
 	// When cross-family judging is wanted but only the host family is present,
 	// record that the bias is mitigated by position-swap alone.
 	const at0 = (s: SliceFlowConfig["models"]["verify"]) => (Array.isArray(s) ? (s[0] ?? null) : s);
-	const judgeCaveat = resolveJudge(at0(cfg.models.verify), at0(cfg.models.build), new Set(judgeFamilies), cfg.judgeFamily ?? "cross").caveat;
+	const judgeCaveat = resolveJudge(at0(tcfg.models.verify), at0(tcfg.models.build), new Set(judgeFamilies), cfg.judgeFamily ?? "cross").caveat;
 	if (judgeCaveat) logEvent(state, `judge family: ${judgeCaveat}`);
+	logEvent(state, `tier: ${tier}`, "lifecycle");
 	return issue(
 		p,
 		state,
-		intakeDirective(p, state, cfg),
-		`slice-flow started. Task slug: ${slug} (folder ${p.root}). Pass "slug":"${slug}" on every follow-up slice_flow call. Baseline commit: ${baselineCommit ?? "(not a git repo)"}.` +
+		intakeDirective(p, state, tcfg),
+		`slice-flow started. Task slug: ${slug} (folder ${p.root}). Pass "slug":"${slug}" on every follow-up slice_flow call. Tier: ${tier}. Baseline commit: ${baselineCommit ?? "(not a git repo)"}.` +
 			(cgLine ? `\n${cgLine}` : ""),
 	);
 }

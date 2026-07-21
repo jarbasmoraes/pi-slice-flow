@@ -22,7 +22,7 @@ function runStart(codegraphState) {
 
 /** The exact startup line emitted today, with no codegraph announcement. */
 function basePreamble(p) {
-  return `slice-flow started. Task slug: feat (folder ${p.root}). Pass "slug":"feat" on every follow-up slice_flow call. Baseline commit: base123.`;
+  return `slice-flow started. Task slug: feat (folder ${p.root}). Pass "slug":"feat" on every follow-up slice_flow call. Tier: medium. Baseline commit: base123.`;
 }
 
 // --- the detection→injection bridge (gates AC 5/6) -----------------------------

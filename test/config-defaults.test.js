@@ -13,6 +13,7 @@ const expectedAgents = {
   intake: "slice-flow-scout",
   research: "slice-flow-researcher",
   attack: "slice-flow-oracle-adversary",
+  fusion: "slice-flow-oracle-fusion",
   compile: "slice-flow-scout",
   frameJudge: "slice-flow-oracle-judge",
   hypothesis: "slice-flow-scout",
@@ -50,9 +51,9 @@ test("DEFAULT_CONFIG.agents maps all phases to namespaced slice-flow-<role> agen
 test("every quoted value in the agents block is a slice-flow-* name", () => {
   const block = agentsBlock();
   const values = [...block.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  assert.equal(values.length, 15, "agents block must have 15 values");
+  assert.equal(values.length, 16, "agents block must have 16 values");
   for (const value of values) {
-    assert.match(value, /^slice-flow-(scout|researcher|builder|oracle-adversary|oracle-judge|planner|reviewer)$/, `value ${value} is not namespaced`);
+    assert.match(value, /^slice-flow-(scout|researcher|builder|oracle-adversary|oracle-fusion|oracle-judge|planner|reviewer)$/, `value ${value} is not namespaced`);
   }
 });
 

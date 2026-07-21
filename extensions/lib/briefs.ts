@@ -190,6 +190,29 @@ Apply the injected architecture-attack skill (disposition role). Disposition eve
 Your final answer is saved automatically to ${p.archDispositions}. Do not edit any files.`;
 }
 
+export function attackFusionBrief(p: Paths, feature: string): string {
+	return `# Fuse the adversarial attack panel
+
+Feature being framed: ${feature}
+
+The attack panel ran multiple fresh adversaries, each on a different charter and — where more than one model family was available — a different MODEL FAMILY (e.g. Claude and GPT). Their reports live under ${p.frameAttacks}/ — list and read EVERY one. The decision ledger and intake assessment are injected for context.
+
+You are the fusion consolidator. You did not attack; you weigh. Produce ONE consolidated view of every objection raised, so the framing partner has a single prioritized surface instead of N raw reports. Deduplicate aggressively — the same objection phrased two ways is one objection.
+
+Write exactly these three sections, in this order:
+
+## Consensus
+Objections raised INDEPENDENTLY by two or more adversaries (especially across different model families). These are the highest-signal findings. For each: the objection in one declarative sentence, which adversaries/families raised it, and the evidence (file/source/ledger entry).
+
+## Divergence
+Objections only ONE adversary raised. A single-family blind spot the others missed is valuable, not weak. For each: the objection, who raised it, its evidence, and one line on why the others may have missed it.
+
+## Discarded
+Objections you judge too weak, unsupported, or duplicative to carry forward. For each: one line naming it and the reason it is discarded. Never silently drop an objection — a discard is a decision the human can overrule.
+
+Ground every retained objection in real evidence; do not invent. If the panel produced no substantive objection, say so plainly under Consensus and leave the other sections empty. Your final answer is saved automatically to ${p.frameAttackFusion}. Do not edit any files.`;
+}
+
 export function compileBrief(p: Paths, feature: string, notes?: string): string {
 	return `# Compile the frame document
 

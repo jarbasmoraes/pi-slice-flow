@@ -24,7 +24,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { DEFAULT_CONFIG, loadConfig } from "./lib/config.ts";
+import { applyTier, DEFAULT_CONFIG, loadConfig } from "./lib/config.ts";
 import { getTelemetry } from "./lib/telemetry.ts";
 import { getTodoist } from "./lib/todoist.ts";
 import type { SliceFlowConfig } from "./lib/config.ts";
@@ -85,7 +85,11 @@ function openTask(cwd: string, slug?: string): Workspace {
 		}
 		case "ok": {
 			const p = workPaths(cwd, cfg.workDir, res.slug);
-			return { cfg, p, state: loadState(p), slug: res.slug };
+			const state = loadState(p);
+			// Re-derive the task's tiered config so every action (next/attack/
+			// research/converge) uses the models the task was started with. Falls
+			// back to the config default for pre-tier tasks (state.tier undefined).
+			return { cfg: applyTier(cfg, state?.tier ?? cfg.defaultTier), p, state, slug: res.slug };
 		}
 	}
 }
@@ -97,7 +101,7 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Orchestrates the slice-flow feature workflow (frame -> architect -> plan -> implement -> verify -> loop). " +
 			"Each task lives in its own .pi/task/<slug>/ folder and several can be active at once. " +
-			"Actions: 'start' (requires description, unless todoist:'pick' adopts a Todoist task whose title stands in) begins a new task and returns its slug; 'next' validates the last step, runs approval gates, and returns the next directive; " +
+			"Actions: 'start' (requires description, unless todoist:'pick' adopts a Todoist task whose title stands in) begins a new task and returns its slug (optional 'tier': easy|medium|hard scales the model used across every phase, fixed for the task's lifetime); 'next' validates the last step, runs approval gates, and returns the next directive; " +
 			"'status' reports state; 'abort' stops the task. During frame exploration only: 'research' (requires questions) fans out web researchers, " +
 			"'attack' spawns fresh adversaries against the draft framing, 'converge' compiles the decision ledger into the frame document. " +
 			"Cross-run, read-only: 'metrics' aggregates per-gate override rates, retries, and token spend across all tasks, plus a per-cohort comparison table when more than one cohort exists — cohorts default to slice-flow's own released version (package.json), so each release is a comparable before/after group automatically; " +
@@ -130,6 +134,15 @@ export default function (pi: ExtensionAPI) {
 			),
 			judge: Type.Optional(
 				Type.String({ description: `Gate/judge to reflect on for action 'reflect' (one of ${Object.keys(REFLECT_RUBRICS).join(", ")}); omit to reflect on all.` }),
+			),
+			tier: Type.Optional(
+				StringEnum(["easy", "medium", "hard"] as const, {
+					description:
+						"Capability tier for action 'start' (one task): scales the model used in every phase. " +
+						"'easy' caps at a cheap workhorse (lowest cost); 'medium' is the balanced baseline; " +
+						"'hard' fans SOTA flagship models across the pipeline (highest cost/quality). " +
+						"Omit to use the configured defaultTier. Fixed for the task's lifetime once set.",
+				}),
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -194,7 +207,8 @@ export default function (pi: ExtensionAPI) {
 				// description (or the adopted task's title), independent of this seed,
 				// so folder naming stays stable.
 				const feature = todoist?.seed?.trim() || description;
-				const text = startWorkflow(p, cfg, feature, slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies, todoist ?? undefined);
+				const tier = params.tier ?? cfg.defaultTier;
+				const text = startWorkflow(p, cfg, feature, slug, baseline, ctx.cwd, codegraphState, isolation, judgeFamilies, todoist ?? undefined, tier);
 				await getTelemetry(cfg, ctx.cwd).flush();
 				await getTodoist(cfg, (c, a, o) => pi.exec(c, a, o)).flush();
 				// Profile affordance (UI banner, not the pure startWorkflow preamble):

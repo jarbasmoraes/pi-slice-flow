@@ -8,6 +8,7 @@
 
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { Tier } from "./config.ts";
 import { WORKTREES_DIR } from "./worktree.ts";
 import type { WorktreeInfo } from "./worktree.ts";
 
@@ -44,6 +45,10 @@ export interface ProjectProfile {
 export interface State {
 	version: 1 | 2;
 	feature: string;
+	/** Capability tier chosen at `slice_flow start`; scales the model used in
+	 * every phase via `applyTier`. Undefined on tasks created before this field
+	 * existed — treated as the config's `defaultTier`. */
+	tier?: Tier;
 	slug: string; // task folder name under the container dir (.pi/task/<slug>/)
 	createdAt: string;
 	updatedAt: string;
@@ -125,6 +130,7 @@ export interface Paths {
 	ledger: string;
 	frameResearch: string;
 	frameAttacks: string;
+	frameAttackFusion: string;
 	frameJudgement: string;
 	frame: string;
 	architecture: string;
@@ -159,6 +165,7 @@ export function workPaths(cwd: string, workDir: string, slug: string): Paths {
 		ledger: join(root, "frame", "ledger.md"),
 		frameResearch: join(root, "frame", "research"),
 		frameAttacks: join(root, "frame", "attacks"),
+		frameAttackFusion: join(root, "frame", "attack-fusion.md"),
 		frameJudgement: join(root, "frame", "judgement.md"),
 		frame: join(root, "01-frame.md"),
 		architecture: join(root, "02-architecture.md"),

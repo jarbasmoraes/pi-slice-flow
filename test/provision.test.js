@@ -9,7 +9,7 @@ import { syncBundledAgents, preflightAgents } from "../extensions/lib/engine.ts"
 
 const here = dirname(fileURLToPath(import.meta.url));
 const bundleDir = join(here, "..", "agents");
-const roles = ["scout", "researcher", "builder", "oracle-adversary", "oracle-judge", "planner", "reviewer"];
+const roles = ["scout", "researcher", "builder", "oracle-adversary", "oracle-fusion", "oracle-judge", "planner", "reviewer"];
 
 // The full agents map the workflow actually configures (see slice-flow.json /
 // DEFAULT_CONFIG.agents) — every value resolves to one of the bundled files.
@@ -18,6 +18,7 @@ const cfg = {
     intake: "slice-flow-scout",
     research: "slice-flow-researcher",
     attack: "slice-flow-oracle-adversary",
+    fusion: "slice-flow-oracle-fusion",
     compile: "slice-flow-scout",
     frameJudge: "slice-flow-oracle-judge",
     hypothesis: "slice-flow-scout",

@@ -16,10 +16,25 @@ import { fileURLToPath } from "node:url";
  * list. */
 export type ModelSpec = string | string[] | null;
 
+/** Capability tier selected per task at `slice_flow start`. Scales the model
+ * used across every phase: `easy` caps at a cheap workhorse, `medium` is the
+ * balanced baseline (equals the un-tiered defaults), `hard` fans SOTA flagship
+ * models across the pipeline. See `modelTiers` / `applyTier`. */
+export type Tier = "easy" | "medium" | "hard";
+
 export interface SliceFlowModels {
 	intake: ModelSpec;
 	research: ModelSpec;
+	/** Adversary models for the attack panels (frame + architecture). An ARRAY
+	 * spreads charters across model FAMILIES (model-vs-model): `withModel` indexes
+	 * by adversary position, so `[claude, gpt]` over 3 charters yields claude, gpt,
+	 * claude. Entries whose family lacks provider auth at start are filtered out
+	 * (Claude-only hosts degrade to a single family). */
 	attack: ModelSpec;
+	/** Consolidator that fuses the multi-family attack reports into one
+	 * consensus / divergence / discarded ledger. Routed cross-family via the judge
+	 * router so a Claude-majority panel is not consolidated by Claude. */
+	fusion: ModelSpec;
 	compile: ModelSpec;
 	frameJudge: ModelSpec;
 	hypothesis: ModelSpec;
@@ -52,6 +67,10 @@ export interface SliceFlowAgents {
 	intake: string;
 	research: string;
 	attack: string;
+	/** Consolidates the attack panel into the consensus/divergence/discarded
+	 * ledger. A distinct identity from the adversary (attacks) and the judge
+	 * (decides): fusion only weighs and deduplicates. */
+	fusion: string;
 	compile: string;
 	frameJudge: string;
 	hypothesis: string;
@@ -168,6 +187,14 @@ export interface SliceFlowConfig {
 	todoist: { enabled: boolean; debug?: boolean };
 	agents: SliceFlowAgents;
 	models: SliceFlowModels;
+	/** Tier applied to a task when `slice_flow start` is called without an
+	 * explicit `tier`. */
+	defaultTier: Tier;
+	/** Per-tier model overrides, layered over `models` for the task's chosen
+	 * tier (see `applyTier`). A tier's map is partial: any role it omits inherits
+	 * `models`. `medium` is intentionally empty so it equals the un-tiered
+	 * baseline and the default behavior is unchanged. */
+	modelTiers: Record<Tier, Partial<SliceFlowModels>>;
 }
 
 /** slice-flow's own package.json, resolved relative to this file so it
@@ -214,7 +241,11 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	// before their prefix so substring matching resolves them correctly), then
 	// local ollama models (qwen*/gemma*) whose marginal $/token is ~free.
 	modelWeights: {
+		"claude-fable": 1.5,
 		opus: 1,
+		"gpt-5.6-sol": 1,
+		"gpt-5.6-terra": 0.5,
+		"gpt-5.6-luna": 0.2,
 		"gpt-5.5": 0.5,
 		sonnet: 0.25,
 		"gpt-5.4-mini": 0.06,
@@ -259,6 +290,7 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 		// judge that weighs and decides. Maximizing breakage and deciding cleanly
 		// are different instincts, and the split gives each its own tunable identity.
 		attack: "slice-flow-oracle-adversary",
+		fusion: "slice-flow-oracle-fusion",
 		compile: "slice-flow-scout",
 		frameJudge: "slice-flow-oracle-judge",
 		hypothesis: "slice-flow-scout",
@@ -275,7 +307,11 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 	models: {
 		intake: "anthropic/claude-haiku-4-5",
 		research: "anthropic/claude-haiku-4-5",
-		attack: null,
+		// Cross-family by default (model-vs-model): a Claude and a GPT adversary
+		// attack from different blind spots. Collapses to Claude-only when GPT auth
+		// is absent (see crossFamilyAttack in directives.ts).
+		attack: ["anthropic/claude-opus-4-8", "openai-codex/gpt-5.6-terra"],
+		fusion: "anthropic/claude-opus-4-8",
 		compile: null,
 		frameJudge: "anthropic/claude-opus-4-8",
 		// Architecture hypotheses are high-leverage (every slice inherits their
@@ -300,6 +336,52 @@ export const DEFAULT_CONFIG: SliceFlowConfig = {
 		// agentic accuracy, so the regression re-checks get a strictly better model
 		// at no extra cost.
 		verifyRegression: "anthropic/claude-sonnet-5",
+	},
+	defaultTier: "medium",
+	// Tier presets built from the models verified in this host's registry
+	// (~/.pi/agent/models-store.json). `medium` is empty on purpose: it equals
+	// the `models` baseline above, so an un-tiered run is unchanged.
+	modelTiers: {
+		// EASY: cap everything at a cheap workhorse; no flagship spend anywhere.
+		easy: {
+			attack: ["anthropic/claude-sonnet-5", "openai-codex/gpt-5.6-luna"],
+			fusion: "anthropic/claude-sonnet-5",
+			compile: "anthropic/claude-sonnet-5",
+			frameJudge: "anthropic/claude-sonnet-5",
+			hypothesis: "anthropic/claude-sonnet-5",
+			architectJudge: "anthropic/claude-sonnet-5",
+			prototypeJudge: "anthropic/claude-sonnet-5",
+			plan: "anthropic/claude-sonnet-5",
+			planJudge: "anthropic/claude-sonnet-5",
+			build: "anthropic/claude-sonnet-5",
+			review: "anthropic/claude-sonnet-5",
+			fixup: "anthropic/claude-sonnet-5",
+			verify: "anthropic/claude-sonnet-5",
+			verifyRegression: "openai-codex/gpt-5.4-mini",
+		},
+		// MEDIUM: the baseline (haiku discovery, opus judging/verification).
+		medium: {},
+		// HARD: SOTA flagships across the high-leverage roles; sonnet for the
+		// mechanical discovery roles so cost lands where judgment matters.
+		hard: {
+			intake: "anthropic/claude-sonnet-5",
+			research: "anthropic/claude-sonnet-5",
+			attack: ["anthropic/claude-fable-5", "openai-codex/gpt-5.6-sol"],
+			fusion: "anthropic/claude-fable-5",
+			compile: "anthropic/claude-fable-5",
+			frameJudge: "anthropic/claude-fable-5",
+			hypothesis: "anthropic/claude-fable-5",
+			architectJudge: "anthropic/claude-fable-5",
+			prototype: "anthropic/claude-sonnet-5",
+			prototypeJudge: "anthropic/claude-fable-5",
+			plan: "anthropic/claude-fable-5",
+			planJudge: "anthropic/claude-fable-5",
+			build: "anthropic/claude-fable-5",
+			review: "anthropic/claude-fable-5",
+			fixup: "anthropic/claude-fable-5",
+			verify: "anthropic/claude-fable-5",
+			verifyRegression: "anthropic/claude-opus-4-8",
+		},
 	},
 };
 
@@ -341,7 +423,28 @@ function mergeConfig(base: SliceFlowConfig, overlay: Record<string, unknown>): S
 		profile: { ...base.profile, ...((overlay.profile as Partial<SliceFlowConfig["profile"]>) ?? {}) },
 		agents: { ...base.agents, ...((overlay.agents as Partial<SliceFlowAgents>) ?? {}) },
 		models: { ...base.models, ...((overlay.models as Partial<SliceFlowModels>) ?? {}) },
+		modelTiers: mergeModelTiers(base.modelTiers, overlay.modelTiers as Partial<Record<Tier, Partial<SliceFlowModels>>> | undefined),
 	};
+}
+
+/** Deep-merge tier presets so a project overlay can tune ONE role in ONE tier
+ * (e.g. `{"modelTiers":{"hard":{"build":"..."}}}`) without restating the tier. */
+function mergeModelTiers(base: Record<Tier, Partial<SliceFlowModels>>, overlay?: Partial<Record<Tier, Partial<SliceFlowModels>>>): Record<Tier, Partial<SliceFlowModels>> {
+	if (!overlay) return base;
+	const tiers: Tier[] = ["easy", "medium", "hard"];
+	const out = {} as Record<Tier, Partial<SliceFlowModels>>;
+	for (const t of tiers) out[t] = { ...base[t], ...(overlay[t] ?? {}) };
+	return out;
+}
+
+/** Layer a task's tier onto its config: the tier's model overrides win over the
+ * baseline `models`. Roles a tier omits (and the empty `medium` tier) inherit
+ * `models` unchanged. Unknown/absent tiers return `cfg` untouched (fail-soft).
+ * Every other config field is preserved, so this is safe to apply per task. */
+export function applyTier(cfg: SliceFlowConfig, tier: Tier | undefined): SliceFlowConfig {
+	const preset = tier ? cfg.modelTiers[tier] : undefined;
+	if (!preset) return cfg;
+	return { ...cfg, models: { ...cfg.models, ...preset } };
 }
 
 /**

@@ -36,7 +36,7 @@ function cfgWith(models) {
 test("a single string model applies to every fan-out run", () => {
   const { p, state } = workspace();
   const d = attackDirective(p, state, cfgWith({ attack: "anthropic/claude-opus-4-8" }));
-  for (const t of d.args.tasks) {
+  for (const t of d.args.chain[0].parallel) {
     assert.equal(t.model, "anthropic/claude-opus-4-8");
   }
 });
@@ -45,9 +45,32 @@ test("a single string model applies to every fan-out run", () => {
 
 test("attack list round-robins across the parallel adversaries", () => {
   const { p, state } = workspace();
+  // Declare every family available so the cross-family filter keeps them all.
+  state.judgeFamilies = ["claude", "gpt", "qwen"];
   const list = ["openai-codex/gpt-5.5", "anthropic/claude-opus-4-8", "ollama/qwen3.6-coder:latest"];
   const d = attackDirective(p, state, cfgWith({ attack: list }));
-  assert.deepEqual(d.args.tasks.map((t) => t.model), list.slice(0, d.args.tasks.length));
+  const parallel = d.args.chain[0].parallel;
+  assert.deepEqual(parallel.map((t) => t.model), list.slice(0, parallel.length));
+});
+
+test("attack panel collapses to Claude-only when GPT auth is absent", () => {
+  const { p, state } = workspace();
+  state.judgeFamilies = ["claude"]; // no GPT provider
+  const list = ["anthropic/claude-fable-5", "openai-codex/gpt-5.6-sol"];
+  const d = attackDirective(p, state, cfgWith({ attack: list }));
+  for (const t of d.args.chain[0].parallel) {
+    assert.equal(t.model, "anthropic/claude-fable-5", "GPT adversary must be dropped, never left as a dead id");
+  }
+});
+
+test("the attack directive appends a fusion consolidation step", () => {
+  const { p, state } = workspace();
+  const d = attackDirective(p, state, cfgWith({ fusion: "anthropic/claude-opus-4-8" }));
+  const fusion = d.args.chain[1];
+  assert.equal(fusion.label, "Fuse attack panel");
+  assert.equal(fusion.agent, "slice-flow-oracle-fusion", "fusion uses its own dedicated agent, not the judge");
+  assert.ok(d.expects.includes(p.frameAttackFusion), "the fusion doc must be an expected artifact");
+  assert.equal(fusion.output, p.frameAttackFusion);
 });
 
 test("hypothesis list assigns a distinct model per architecture angle", () => {
@@ -90,7 +113,7 @@ test("verify list assigns a model per dimension in order", () => {
 test("a null spec emits no model field on any run", () => {
   const { p, state } = workspace();
   const d = attackDirective(p, state, cfgWith({ attack: null }));
-  for (const t of d.args.tasks) {
+  for (const t of d.args.chain[0].parallel) {
     assert.equal("model" in t, false);
   }
 });
